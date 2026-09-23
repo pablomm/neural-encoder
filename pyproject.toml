@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neural_encoder"
+dynamic = ["version"]
+requires-python = ">=3.12"
+description = "Learn shared representations from repeated measurements and multiview data using linear and nonlinear encoders."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Pablo Marcos-Manchón", email = "pmarcos@ub.edu" }]
+maintainers = [{ name = "Pablo Marcos-Manchón", email = "pmarcos@ub.edu" }]
+dependencies = [
+    "scikit-learn>=1.6",
+    "numpy",
+    "torch",
+    "lazy_loader",
+    "pandas",
+]
+
+[project.optional-dependencies]
+utils = ["datasets", "pillow", "tqdm"]
+
+[tool.setuptools.dynamic]
+version = { attr = "neural_encoder.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
