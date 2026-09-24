@@ -12,7 +12,7 @@ __all__ = ["split_views"]
 def split_views(
     X: ArrayLike,
     sample_ids: ArrayLike,
-    view_ids: ArrayLike,
+    view_ids: ArrayLike | None = None,
     *,
     n_views: int | None = None,
     impute: Literal["zeros", "mean", "discard"] | None = None,
@@ -28,11 +28,14 @@ def split_views(
     sample_ids : array-like of shape (n_measurements,)
         Sample identities, such as stimulus IDs. Output rows follow sorted
         unique sample IDs. IDs must be nonmissing, mutually sortable scalars.
-    view_ids : array-like of shape (n_measurements,)
+    view_ids : array-like of shape (n_measurements,) or None, default=None
         View identities, such as repetition IDs. Outputs follow sorted unique
         view IDs. Each (sample, view) pair must occur at most once.
+        When omitted, views are assigned by order of appearance within each
+        sample: first occurrence to view 0, second to view 1, and so on.
     n_views : int or None, default=None
         Number of output matrices. None uses the number of observed views.
+        Without view_ids, this is the largest number of occurrences per sample.
         Must be at least that number. Extra views are appended as entirely
         missing matrices. IDs are labels, not zero-based output indices.
     impute : {None, "zeros", "mean", "discard"}, default=None
@@ -85,8 +88,12 @@ def split_views(
         raise ValueError("seed must be a nonnegative integer or None.")
 
     samples, sample_index = _encode_ids(sample_ids, "sample_ids", len(X))
-    views, view_index = _encode_ids(view_ids, "view_ids", len(X))
-    observed_views = len(views)
+    if view_ids is None:
+        view_index = _views_by_occurrence(sample_index)
+        observed_views = int(view_index.max()) + 1
+    else:
+        views, view_index = _encode_ids(view_ids, "view_ids", len(X))
+        observed_views = len(views)
     if n_views is None:
         n_views = observed_views
     elif isinstance(n_views, (bool, np.bool_)) or not isinstance(n_views, Integral) or n_views < observed_views:
@@ -108,6 +115,16 @@ def split_views(
     if shuffle_views:
         output = _shuffle_views(output, seed)
     return tuple(output)
+
+
+def _views_by_occurrence(sample_index: NDArray[np.intp]) -> NDArray[np.intp]:
+    """Return each measurement's zero-based occurrence within its sample."""
+    order = np.argsort(sample_index, kind="stable")
+    counts = np.bincount(sample_index)
+    starts = np.cumsum(counts) - counts
+    view_index = np.empty_like(sample_index)
+    view_index[order] = np.arange(len(sample_index)) - np.repeat(starts, counts)
+    return view_index
 
 
 def _shuffle_views(views: NDArray[Any], seed: int | None) -> NDArray[Any]:

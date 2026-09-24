@@ -13,6 +13,7 @@ authors = [{ name = "Pablo Marcos-Manchón", email = "pmarcos@ub.edu" }]
 maintainers = [{ name = "Pablo Marcos-Manchón", email = "pmarcos@ub.edu" }]
 dependencies = [
     "scikit-learn>=1.6",
+    "scipy>=1.9",
     "numpy",
     "torch",
     "lazy_loader",
@@ -27,3 +28,6 @@ version = { attr = "neural_encoder.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"neural_encoder.mcca" = ["LICENSE"]

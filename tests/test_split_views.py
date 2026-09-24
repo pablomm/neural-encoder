@@ -7,6 +7,26 @@ from neural_encoder.utils.split_views import split_views
 
 
 class TestSplitViews(unittest.TestCase):
+    def test_views_inferred_by_sample_occurrence(self):
+        X = [[20], [10], [21], [30], [11], [22]]
+        samples = ["b", "a", "b", "c", "a", "b"]
+        views = split_views(X, samples)
+        assert_array_equal(views[0], [[10], [20], [30]])
+        assert_allclose(views[1], [[11], [21], [np.nan]], equal_nan=True)
+        assert_allclose(views[2], [[np.nan], [22], [np.nan]], equal_nan=True)
+        explicit = [0, 0, 1, 0, 1, 2]
+        for impute in (None, "zeros", "mean", "discard"):
+            with self.subTest(impute=impute):
+                kwargs = dict(impute=impute, shuffle_views=True, seed=42)
+                assert_allclose(
+                    split_views(X, samples, **kwargs),
+                    split_views(X, samples, explicit, **kwargs), equal_nan=True,
+                )
+        extra = split_views(X, samples, n_views=4, impute="zeros")
+        assert_array_equal(extra[3], np.zeros((3, 1)))
+        with self.assertRaises(ValueError):
+            split_views(X, samples, n_views=2)
+
     def test_shuffle_reproducibility_and_alignment(self):
         samples = np.repeat(np.arange(20), 3)
         view_ids = np.tile(np.arange(3), 20)
