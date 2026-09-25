@@ -42,7 +42,7 @@ class DistilledMCCA(TransformerMixin, BaseEstimator):
 
     Attributes
     ----------
-    mcca_ : neural_encoder.mcca.MCCA
+    mcca_ : neural_encoder._mcca.MCCA
         Fitted multiview model.
     coef_ : ndarray of shape (n_components, n_features)
         Distilled projection coefficients.
@@ -118,7 +118,7 @@ class DistilledMCCA(TransformerMixin, BaseEstimator):
         return self._fit_projector(arrays, np.concatenate(arrays, axis=0))
 
     def _fit_projector(self, views: Sequence[NDArray[Any]], X: NDArray[Any]) -> Self:
-        from ..mcca import MCCA
+        from .._mcca import MCCA
 
         if len(views) < 2:
             raise ValueError("At least two views are required.")

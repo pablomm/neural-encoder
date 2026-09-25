@@ -30,4 +30,4 @@ version = { attr = "neural_encoder.__version__" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-"neural_encoder.mcca" = ["LICENSE"]
+"neural_encoder._mcca" = ["LICENSE"]
