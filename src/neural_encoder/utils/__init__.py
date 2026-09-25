@@ -8,11 +8,13 @@ __getattr__, __dir__, __all__ = lazy.attach(
     submod_attrs={
         "preprocessing": ["MeasurementPreprocessor"],
         "split_views": ["split_views"],
+        "confound_removal": ["ConfoundRemover"],
     },
 )
 
 if TYPE_CHECKING:
     from .split_views import split_views
     from .preprocessing import MeasurementPreprocessor
+    from .confound_removal import ConfoundRemover
 
-__all__ = ["MeasurementPreprocessor", "split_views"]
+__all__ = ["MeasurementPreprocessor", "split_views", "ConfoundRemover"]

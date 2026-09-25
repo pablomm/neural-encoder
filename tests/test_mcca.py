@@ -5,8 +5,8 @@ from numpy.testing import assert_allclose
 from sklearn.base import clone
 from sklearn.exceptions import NotFittedError
 
-from neural_encoder.mcca import MCCA
-from neural_encoder.mcca.mcca import _construct_mcca_gevp
+from neural_encoder._mcca import MCCA
+from neural_encoder._mcca.mcca import _construct_mcca_gevp
 
 
 class TestMCCA(unittest.TestCase):
