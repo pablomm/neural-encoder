@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping
 from numbers import Integral
-from typing import Any, Literal, Self
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -15,6 +15,9 @@ from .distilled_mcca import DistilledMCCA
 from .feature_reweighting import FeatureReweighting
 
 __all__ = ["LinearEncoder"]
+
+if TYPE_CHECKING:
+    import torch
 
 
 class LinearEncoder(TransformerMixin, BaseEstimator):
@@ -175,6 +178,29 @@ class LinearEncoder(TransformerMixin, BaseEstimator):
         """
         check_is_fitted(self, ["coef_", "intercept_"])
         return self.coef_.T.copy(), self.intercept_.copy()
+
+    def to_torch(
+        self, *, device: "str | torch.device | None" = None,
+        dtype: "torch.dtype | None" = None,
+    ) -> "torch.nn.Linear":
+        """Return an independent PyTorch linear layer with the fitted weights.
+
+        The layer computes the same affine map as transform. It defaults to
+        CPU and the fitted coefficient dtype. Pass dtype=torch.float32 for
+        use with float32 networks. Parameters are trainable and do not share
+        storage with the encoder; use requires_grad_(False) to freeze them.
+        """
+        import torch
+
+        check_is_fitted(self, ["coef_", "intercept_"])
+        weight = torch.as_tensor(self.coef_.copy(), device=device, dtype=dtype)
+        bias = torch.as_tensor(self.intercept_.copy(), device=device, dtype=weight.dtype)
+        # Replacing an empty layer's parameters avoids random initialization
+        # of a potentially large projection matrix.
+        layer = torch.nn.Linear(self.n_features_in_, self.n_components_, device="meta", dtype=weight.dtype)
+        layer.weight = torch.nn.Parameter(weight)
+        layer.bias = torch.nn.Parameter(bias)
+        return layer
 
     def transform(self, X: ArrayLike) -> NDArray[Any]:
         """Encode measurements using the combined affine map; no IDs needed."""

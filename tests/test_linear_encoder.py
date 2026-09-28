@@ -11,6 +11,32 @@ from neural_encoder.linear import DistilledMCCA, FeatureReweighting, LinearEncod
 
 
 class TestLinearEncoder(unittest.TestCase):
+    def test_to_torch(self):
+        import torch
+
+        with self.assertRaises(NotFittedError):
+            LinearEncoder().to_torch()
+        model = LinearEncoder(
+            pca_kwargs={"n_components": 4, "whiten": True},
+            distilled_mcca_kwargs={"n_components": 2},
+        ).fit(self.X, sample_ids=self.samples)
+        layer = model.to_torch()
+        self.assertIsInstance(layer, torch.nn.Linear)
+        self.assertEqual(layer.weight.dtype, torch.float64)
+        X = torch.tensor(self.test_X, requires_grad=True)
+        result = layer(X)
+        expected = model.transform(self.test_X)
+        assert_allclose(result.detach().numpy(), expected, atol=1e-12)
+        result.sum().backward()
+        self.assertIsNotNone(X.grad)
+        self.assertIsNotNone(layer.weight.grad)
+        single = model.to_torch(dtype=torch.float32, device="cpu")
+        assert_allclose(single(X.float()).detach().numpy(), expected, atol=1e-6)
+        with torch.no_grad():
+            layer.weight.zero_()
+            layer.bias.zero_()
+        assert_allclose(model.transform(self.test_X), expected)
+
     def test_get_projection(self):
         with self.assertRaises(NotFittedError):
             LinearEncoder().get_projection()

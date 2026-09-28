@@ -510,3 +510,19 @@ def get_subject_behavioural(subject: int, base_dir: Optional[Path] = None) -> pd
     d_runs = pd.read_csv(file_path, sep="\t")
     d_runs["session_run"] = d_runs["SESSION"] * 100 + d_runs["RUN"]
     return d_runs
+
+
+def get_shared_stimuli(min_reps: int = 3) -> np.ndarray:
+    """Get the nsd_id of stimuli that are shared across subjects and have at least `min_reps` repetitions."""
+    df = get_resource("stimulus").query("shared and exists")
+    n_subjects = df.subject.nunique()
+    
+    df = (
+        df.query("repetition==@min_reps-1")
+        .groupby("nsd_id")
+        .subject.count()
+        .reset_index()
+        .query("subject==@n_subjects")
+    )
+    nsd_id = df.nsd_id.values
+    return nsd_id

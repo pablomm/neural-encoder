@@ -122,11 +122,17 @@ class TestNonlinear(unittest.TestCase):
                                   optimizer_kwargs={"lr": 0.03, "weight_decay": 0.0})
         model.fit_views(self.views)
         self.assertEqual(calls, [12] * 12)
-        torch.testing.assert_close(branch.weight, before)
+        self.assertIs(model.model_.network, branch)
+        self.assertFalse(torch.equal(branch.weight, before))
         self.assertAlmostEqual(model.model_.alpha.item(), 0.25)
         self.assertLess(model.history_[-1]["loss"], model.history_[0]["loss"])
         factory = lambda n_features, bias: nn.Linear(n_features, n_features, bias=bias)
         self.make_refiner(network=factory, network_kwargs={"bias": False}).fit_views(self.views[:2])
+
+    def test_supplied_loss_is_used_directly(self):
+        loss = MultiViewContrastiveLoss()
+        model = self.make_refiner(loss=loss).fit_views(self.views)
+        self.assertIs(model.loss_, loss)
 
     def test_validation_logger_and_scheduler(self):
         recorder = Recorder()
@@ -147,6 +153,18 @@ class TestNonlinear(unittest.TestCase):
         model = self.make_refiner(dtype=torch.float64).fit_views(self.views)
         torch.testing.assert_close(torch.get_rng_state(), state)
         self.assertEqual(model.transform(self.views[0]).dtype, np.float64)
+
+    def test_to_torch_returns_internal_module(self):
+        with self.assertRaises(NotFittedError):
+            self.make_refiner().to_torch()
+        refiner = self.make_refiner().fit_views(self.views)
+        model = refiner.to_torch()
+        self.assertIs(model, refiner.model_)
+        with torch.no_grad():
+            model.alpha.zero_()
+        assert_allclose(refiner.transform(self.views[0]), self.views[0])
+        model.train()
+        self.assertTrue(refiner.to_torch().training)
 
     def test_validation_errors(self):
         with self.assertRaises(NotFittedError):

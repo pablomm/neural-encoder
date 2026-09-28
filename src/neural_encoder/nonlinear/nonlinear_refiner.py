@@ -1,7 +1,6 @@
 """Estimator interface for residual refinement of fixed representations."""
 
 from collections.abc import Callable, Mapping, Sequence
-from copy import deepcopy
 from numbers import Integral
 from typing import Any, Literal, Self
 
@@ -30,8 +29,8 @@ class NonlinearRefiner(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
         Residual branch g in f(z) = z + alpha*g(z), not a full residual model.
         The default is an MLP with one 768-unit GELU hidden layer and dropout
         0.1. Its output layer starts at zero. A factory is called with
-        n_features and network_kwargs. A supplied module is deep-copied,
-        preserving its initial weights. Each fit starts from this template.
+        n_features and network_kwargs. A supplied module is trained directly,
+        updating its parameters in place.
     network_kwargs : dict or None, default=None
         Constructor arguments for the default MLP or network factory.
     initial_alpha : float, default=0.25
@@ -42,7 +41,7 @@ class NonlinearRefiner(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
     loss : {"default"}, nn.Module, or callable, default="default"
         Default: MultiViewContrastiveLoss(). A custom objective must accept
         loss(outputs, inputs=inputs) and return a scalar tensor. Supplied
-        loss modules are deep-copied; their trainable parameters are optimized.
+        loss modules are used directly; their trainable parameters are optimized.
     loss_kwargs : dict or None, default=None
         Constructor arguments for the default loss only.
     optimizer : callable, default=torch.optim.AdamW
@@ -97,7 +96,9 @@ class NonlinearRefiner(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
     Notes
     -----
     Input representations are detached from any upstream graph. No upstream
-    encoder is fitted or updated. fit always starts a fresh training run.
+    encoder is fitted or updated. Each fit resets the optimizer, history, and
+    alpha. Supplied modules retain their current parameters; default networks
+    and network factories create a new network on each fit.
     transform accepts arrays or tensors and returns NumPy; model_ is the
     direct PyTorch interface. Validation views must be held out by sample
     identity by the caller and contain at least three aligned samples.
@@ -213,7 +214,7 @@ class NonlinearRefiner(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
         if isinstance(self.network, nn.Module):
             if self.network_kwargs is not None:
                 raise ValueError("network_kwargs cannot accompany a module instance.")
-            network = deepcopy(self.network)
+            network = self.network
         elif callable(self.network):
             network = self.network(n_features=self.n_features_in_, **kwargs)
         else:
@@ -229,7 +230,7 @@ class NonlinearRefiner(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
             raise ValueError("loss_kwargs is only supported for the default loss.")
         if not callable(self.loss):
             raise TypeError("loss must be 'default' or a callable.")
-        return deepcopy(self.loss) if isinstance(self.loss, nn.Module) else self.loss
+        return self.loss
 
     def _train(self, arrays: Sequence[NDArray], validation: Sequence[NDArray] | None, seed: int) -> None:
         views = [torch.tensor(X, device=self.device_, dtype=self.dtype) for X in arrays]
@@ -287,6 +288,15 @@ class NonlinearRefiner(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
         if isinstance(self.loss_, nn.Module):
             self.loss_.train()
         return {"validation_loss": loss, **{f"validation_{key}": value for key, value in metrics.items()}}
+
+    def to_torch(self) -> ResidualNetwork:
+        """Return the fitted internal PyTorch module without copying it.
+
+        Changes to this module also affect the refiner. Its current device,
+        dtype, training mode, and gradient settings are preserved.
+        """
+        check_is_fitted(self, ["model_", "n_steps_"])
+        return self.model_
 
     def transform(self, X: ArrayLike) -> NDArray:
         """Return refined NumPy representations in evaluation mode."""
