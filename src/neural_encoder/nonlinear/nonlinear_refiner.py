@@ -26,10 +26,11 @@ class NonlinearRefiner(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
     Parameters
     ----------
     network : {"default"}, nn.Module, or callable, default="default"
-        Residual branch g in f(z) = z + alpha*g(z), not a full residual model.
+        Residual branch g in f(z, y) = z + alpha*g(y), with y=z by default.
         The default is an MLP with one 768-unit GELU hidden layer and dropout
         0.1. Its output layer starts at zero. A factory is called with
-        n_features and network_kwargs. A supplied module is trained directly,
+        n_features (output size) and network_kwargs; with separate inputs it also
+        receives network_input_features. A supplied module is trained directly,
         updating its parameters in place.
     network_kwargs : dict or None, default=None
         Constructor arguments for the default MLP or network factory.
@@ -84,12 +85,17 @@ class NonlinearRefiner(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
         Trained PyTorch model, left in evaluation mode. Use directly for
         tensor outputs or differentiable inference.
     loss_ : callable or nn.Module
-        Resolved training objective.
+        Resolved training objective. Custom losses receive base representations
+        through inputs, irrespective of the residual branch input.
     history_ : list of dict
         Scalar metrics for every step, including optional validation metrics.
     n_features_in_, n_views_, n_samples_, n_steps_ : int
         Input feature count, training view count, aligned sample count, and
         completed optimizer steps.
+    network_input_features_ : int
+        Number of input features for the residual branch.
+    separate_network_input_ : bool
+        Whether fitting used separate residual branch inputs.
     device_ : torch.device
         Resolved device used for training and inference.
 
@@ -136,22 +142,38 @@ class NonlinearRefiner(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
 
     def fit(
         self, X: ArrayLike, y: Any = None, *, sample_ids: ArrayLike,
-        view_ids: ArrayLike | None = None, validation_views: Sequence[ArrayLike] | None = None,
+        view_ids: ArrayLike | None = None, network_input: ArrayLike | None = None,
+        validation_views: Sequence[ArrayLike] | None = None,
+        validation_network_input: Sequence[ArrayLike] | None = None,
     ) -> Self:
-        """Fit from measurements and sample identities; optional y is ignored."""
+        """Fit from measurements and sample identities; optional y is ignored.
+
+        network_input supplies row-aligned inputs for the residual branch,
+        defaulting to X. Validation inputs are supplied as aligned view lists.
+        """
         self._validate_parameters()
         X = validate_data(self, _as_array(X), dtype=[np.float64, np.float32], ensure_min_samples=2)
-        views = split_views(X, sample_ids, view_ids, impute=self.impute)
-        return self._fit_views(views, validation_views)
+        if network_input is None:
+            views = split_views(X, sample_ids, view_ids, impute=self.impute)
+            network_views = None
+        else:
+            network_input = _network_array(network_input, X)
+            combined = split_views(np.concatenate([X, network_input], axis=1),
+                                   sample_ids, view_ids, impute=self.impute)
+            views = [view[:, :self.n_features_in_] for view in combined]
+            network_views = [view[:, self.n_features_in_:] for view in combined]
+        return self._fit_views(views, validation_views, network_views, validation_network_input)
 
     def fit_views(
-        self, views: Sequence[ArrayLike], *, validation_views: Sequence[ArrayLike] | None = None,
+        self, views: Sequence[ArrayLike], *, network_input: Sequence[ArrayLike] | None = None,
+        validation_views: Sequence[ArrayLike] | None = None,
+        validation_network_input: Sequence[ArrayLike] | None = None,
     ) -> Self:
-        """Fit from equally shaped, aligned view matrices."""
+        """Fit aligned views, optionally with corresponding residual input views."""
         self._validate_parameters()
         arrays = _view_arrays(views)
         validate_data(self, arrays[0], dtype=[np.float64, np.float32])
-        return self._fit_views(arrays, validation_views)
+        return self._fit_views(arrays, validation_views, network_input, validation_network_input)
 
     def _validate_parameters(self) -> None:
         for name in ("steps", "batch_size", "eval_every"):
@@ -176,11 +198,27 @@ class NonlinearRefiner(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
         if self.dtype not in (torch.float32, torch.float64):
             raise ValueError("dtype must be torch.float32 or torch.float64.")
 
-    def _fit_views(self, views: Sequence[ArrayLike], validation_views: Sequence[ArrayLike] | None) -> Self:
+    def _fit_views(
+        self, views: Sequence[ArrayLike], validation_views: Sequence[ArrayLike] | None,
+        network_input: Sequence[ArrayLike] | None,
+        validation_network_input: Sequence[ArrayLike] | None,
+    ) -> Self:
         arrays = _view_arrays(views)
         validation = None if validation_views is None else _view_arrays(validation_views, min_samples=3)
         if validation is not None and validation[0].shape[1] != self.n_features_in_:
             raise ValueError("Validation views must have the fitted feature count.")
+        self.separate_network_input_ = network_input is not None
+        network_arrays = _network_views(network_input, arrays)
+        self.network_input_features_ = network_arrays[0].shape[1]
+        if validation_network_input is not None and validation is None:
+            raise ValueError("validation_network_input requires validation_views.")
+        validation_network = None
+        if validation is not None:
+            if self.separate_network_input_ and validation_network_input is None:
+                raise ValueError("validation_network_input is required when fitting separate inputs.")
+            validation_network = _network_views(validation_network_input, validation)
+            if validation_network[0].shape[1] != self.network_input_features_:
+                raise ValueError("Validation network inputs must have the fitted feature count.")
         self.device_ = _resolve_device(self.device)
         # Isolate CPU/CUDA initialization and dropout randomness from callers.
         mps_state = torch.mps.get_rng_state() if self.device_.type == "mps" else None
@@ -195,7 +233,7 @@ class NonlinearRefiner(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
                 if isinstance(self.loss_, nn.Module):
                     self.loss_.to(device=self.device_, dtype=self.dtype)
                 self.n_views_, self.n_samples_ = len(arrays), len(arrays[0])
-                self._train(arrays, validation, seed)
+                self._train(arrays, network_arrays, validation, validation_network, seed)
         finally:
             if mps_state is not None:
                 torch.mps.set_rng_state(mps_state)
@@ -208,7 +246,8 @@ class NonlinearRefiner(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
         kwargs = dict(self.network_kwargs or {})
         if isinstance(self.network, str) and self.network == "default":
             return ResidualMLP(
-                self.n_features_in_, initial_alpha=self.initial_alpha,
+                self.n_features_in_, network_input_features=self.network_input_features_,
+                initial_alpha=self.initial_alpha,
                 trainable_alpha=self.trainable_alpha, **kwargs,
             )
         if isinstance(self.network, nn.Module):
@@ -216,6 +255,8 @@ class NonlinearRefiner(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
                 raise ValueError("network_kwargs cannot accompany a module instance.")
             network = self.network
         elif callable(self.network):
+            if self.separate_network_input_:
+                kwargs["network_input_features"] = self.network_input_features_
             network = self.network(n_features=self.n_features_in_, **kwargs)
         else:
             raise TypeError("network must be 'default', an nn.Module, or a factory.")
@@ -232,8 +273,15 @@ class NonlinearRefiner(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
             raise TypeError("loss must be 'default' or a callable.")
         return self.loss
 
-    def _train(self, arrays: Sequence[NDArray], validation: Sequence[NDArray] | None, seed: int) -> None:
+    def _train(
+        self, arrays: Sequence[NDArray], network_arrays: Sequence[NDArray],
+        validation: Sequence[NDArray] | None,
+        validation_network: Sequence[NDArray] | None, seed: int,
+    ) -> None:
         views = [torch.tensor(X, device=self.device_, dtype=self.dtype) for X in arrays]
+        network_views = views if network_arrays is arrays else [
+            torch.tensor(X, device=self.device_, dtype=self.dtype) for X in network_arrays
+        ]
         parameters = list(self.model_.parameters())
         if isinstance(self.loss_, nn.Module):
             parameters += list(self.loss_.parameters())
@@ -247,7 +295,7 @@ class NonlinearRefiner(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
         for step in range(1, self.steps + 1):
             indices = torch.randperm(self.n_samples_, generator=generator)[:self.batch_size].to(self.device_)
             inputs = [view[indices] for view in views]
-            outputs = [self.model_(view) for view in inputs]
+            outputs = [self.model_(view, source[indices]) for view, source in zip(inputs, network_views)]
             if any(out.shape != inp.shape for out, inp in zip(outputs, inputs)):
                 raise ValueError("The residual network must preserve the input shape.")
             loss = self.loss_(outputs, inputs=inputs)
@@ -267,7 +315,7 @@ class NonlinearRefiner(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
             self.n_steps_ = step
             metrics["alpha"] = float(self.model_.alpha.detach())
             if validation is not None and (step % self.eval_every == 0 or step == self.steps):
-                metrics.update(self._evaluate(validation))
+                metrics.update(self._evaluate(validation, validation_network))
             self.history_.append({"step": step, **metrics})
             if self.logger is not None:
                 self.logger.log(dict(metrics), step=step)
@@ -275,13 +323,14 @@ class NonlinearRefiner(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
         if callable(flush):
             flush()
 
-    def _evaluate(self, arrays: Sequence[NDArray]) -> dict[str, float]:
+    def _evaluate(self, arrays: Sequence[NDArray], network_arrays: Sequence[NDArray]) -> dict[str, float]:
         self.model_.eval()
         if isinstance(self.loss_, nn.Module):
             self.loss_.eval()
         with torch.no_grad():
             inputs = [torch.tensor(X, device=self.device_, dtype=self.dtype) for X in arrays]
-            outputs = [self.model_(view) for view in inputs]
+            outputs = [self.model_(view, torch.tensor(source, device=self.device_, dtype=self.dtype))
+                       for view, source in zip(inputs, network_arrays)]
             loss = float(self.loss_(outputs, inputs=inputs))
             metrics = evaluate_views(outputs)
         self.model_.train()
@@ -298,21 +347,32 @@ class NonlinearRefiner(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
         check_is_fitted(self, ["model_", "n_steps_"])
         return self.model_
 
-    def transform(self, X: ArrayLike) -> NDArray:
-        """Return refined NumPy representations in evaluation mode."""
+    def transform(self, X: ArrayLike, *, network_input: ArrayLike | None = None) -> NDArray:
+        """Refine X; network_input is required if separate inputs were used in fit."""
         check_is_fitted(self, ["model_", "n_steps_"])
         X = validate_data(self, _as_array(X), reset=False, dtype=[np.float64, np.float32])
+        if network_input is None and self.separate_network_input_:
+            raise ValueError("network_input is required because fitting used separate inputs.")
+        source = X if network_input is None else _network_array(network_input, X)
+        if source.shape[1] != self.network_input_features_:
+            raise ValueError("network_input must have the fitted feature count.")
         self.model_.eval()
         with torch.no_grad():
-            result = self.model_(torch.tensor(X, device=self.device_, dtype=self.dtype))
+            result = self.model_(torch.tensor(X, device=self.device_, dtype=self.dtype),
+                                 torch.tensor(source, device=self.device_, dtype=self.dtype))
         return result.cpu().numpy()
 
     def fit_transform(
         self, X: ArrayLike, y: Any = None, *, sample_ids: ArrayLike,
-        view_ids: ArrayLike | None = None, validation_views: Sequence[ArrayLike] | None = None,
+        view_ids: ArrayLike | None = None, network_input: ArrayLike | None = None,
+        validation_views: Sequence[ArrayLike] | None = None,
+        validation_network_input: Sequence[ArrayLike] | None = None,
     ) -> NDArray:
         """Fit on aligned training views and transform all measurements."""
-        return self.fit(X, y, sample_ids=sample_ids, view_ids=view_ids, validation_views=validation_views).transform(X)
+        return self.fit(
+            X, y, sample_ids=sample_ids, view_ids=view_ids, network_input=network_input,
+            validation_views=validation_views, validation_network_input=validation_network_input,
+        ).transform(X, network_input=network_input)
 
 
 def _as_array(X: ArrayLike) -> NDArray:
@@ -328,6 +388,22 @@ def _view_arrays(views: Sequence[ArrayLike], min_samples: int = 2) -> list[NDArr
     arrays = [check_array(_as_array(X), dtype=[np.float64, np.float32], ensure_min_samples=min_samples) for X in views]
     if any(X.shape != arrays[0].shape for X in arrays):
         raise ValueError("Views must have equal shapes with corresponding samples and features.")
+    return arrays
+
+
+def _network_array(network_input: ArrayLike, base: NDArray) -> NDArray:
+    array = check_array(_as_array(network_input), dtype=[np.float64, np.float32])
+    if len(array) != len(base):
+        raise ValueError("network_input must have the same number of rows as the base representations.")
+    return array
+
+
+def _network_views(network_input: Sequence[ArrayLike] | None, base: list[NDArray]) -> list[NDArray]:
+    if network_input is None:
+        return base
+    arrays = _view_arrays(network_input)
+    if len(arrays) != len(base) or len(arrays[0]) != len(base[0]):
+        raise ValueError("network_input must match the base view count and row count.")
     return arrays
 
 

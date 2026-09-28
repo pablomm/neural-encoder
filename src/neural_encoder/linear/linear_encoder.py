@@ -208,6 +208,29 @@ class LinearEncoder(TransformerMixin, BaseEstimator):
         X = validate_data(self, X, reset=False, dtype=[np.float64, np.float32])
         return X @ self.coef_.T + self.intercept_
 
+    def transform_until(
+        self, X: ArrayLike, *,
+        stage: Literal["feature_reweighting", "pca", "distilled_mcca"],
+    ) -> NDArray[Any]:
+        """Transform measurements through the selected fitted stage, inclusive.
+
+        For example, stage="pca" returns PCA scores after feature reweighting.
+        Disabled preceding stages are skipped; a disabled target raises an
+        error. No sample or view IDs are required.
+        """
+        check_is_fitted(self, ["coef_", "intercept_"])
+        stages = ("feature_reweighting", "pca", "distilled_mcca")
+        if stage not in stages:
+            raise ValueError(f"stage must be one of {stages}.")
+        if getattr(self, f"{stage}_") is None:
+            raise ValueError(f"The requested stage '{stage}' is disabled.")
+        X = validate_data(self, X, reset=False, dtype=[np.float64, np.float32])
+        for name in stages[:stages.index(stage) + 1]:
+            estimator = getattr(self, f"{name}_")
+            if estimator is not None:
+                X = estimator.transform(X)
+        return X
+
     def fit_transform(
         self, X: ArrayLike, y: Any = None, *,
         sample_ids: ArrayLike | None = None, view_ids: ArrayLike | None = None,

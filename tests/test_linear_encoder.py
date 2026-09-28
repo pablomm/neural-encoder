@@ -11,6 +11,32 @@ from neural_encoder.linear import DistilledMCCA, FeatureReweighting, LinearEncod
 
 
 class TestLinearEncoder(unittest.TestCase):
+    def test_transform_until(self):
+        with self.assertRaises(NotFittedError):
+            LinearEncoder().transform_until(self.test_X, stage="pca")
+        model = LinearEncoder(
+            pca_kwargs={"n_components": 4, "whiten": True},
+            distilled_mcca_kwargs={"n_components": 2},
+        ).fit(self.X, sample_ids=self.samples)
+        weighted = model.feature_reweighting_.transform(self.test_X)
+        assert_allclose(model.transform_until(self.test_X, stage="feature_reweighting"), weighted)
+        assert_allclose(model.transform_until(self.test_X, stage="pca"), model.pca_.transform(weighted))
+        assert_allclose(model.transform_until(self.test_X, stage="distilled_mcca"),
+                        model.transform(self.test_X), atol=1e-12)
+        with self.assertRaisesRegex(ValueError, "stage must be"):
+            model.transform_until(self.test_X, stage="unknown")
+        with self.assertRaises(ValueError):
+            model.transform_until(self.test_X[:, :-1], stage="pca")
+
+    def test_transform_until_skips_disabled_preceding_stages(self):
+        model = LinearEncoder(
+            feature_reweighting=None, pca_kwargs={"n_components": 4}, distilled_mcca=None,
+        ).fit(self.X)
+        assert_allclose(model.transform_until(self.test_X, stage="pca"), model.pca_.transform(self.test_X))
+        for stage in ("feature_reweighting", "distilled_mcca"):
+            with self.assertRaisesRegex(ValueError, "disabled"):
+                model.transform_until(self.test_X, stage=stage)
+
     def test_to_torch(self):
         import torch
 

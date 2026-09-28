@@ -7,12 +7,12 @@ __all__ = ["ResidualNetwork", "ResidualMLP"]
 
 
 class ResidualNetwork(nn.Module):
-    """Wrap a shape-preserving network as f(x) = x + alpha * network(x).
+    """Wrap a residual branch as f(z, y) = z + alpha * network(y).
 
     Parameters
     ----------
     network : torch.nn.Module
-        Residual branch mapping (batch, features) to the same shape.
+        Residual branch whose output matches the base representation shape.
     initial_alpha : float, default=0.25
         Initial residual multiplier.
     trainable_alpha : bool, default=True
@@ -31,11 +31,11 @@ class ResidualNetwork(nn.Module):
         else:
             self.register_buffer("alpha", alpha)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Return refined representations with the same shape as x."""
-        residual = self.forward_residual(x)
+    def forward(self, x: torch.Tensor, network_input: torch.Tensor | None = None) -> torch.Tensor:
+        """Refine x using network_input, or x itself when omitted."""
+        residual = self.forward_residual(x if network_input is None else network_input)
         if residual.shape != x.shape:
-            raise ValueError("The residual network must preserve the input shape.")
+            raise ValueError("The residual output must match the base representation shape.")
         return x + self.alpha * residual
 
     def forward_residual(self, x: torch.Tensor) -> torch.Tensor:
@@ -46,6 +46,8 @@ class ResidualNetwork(nn.Module):
 class ResidualMLP(ResidualNetwork):
     """Residual MLP with GELU, dropout, and an initially zero residual.
 
+    n_features is the output dimension. network_input_features defaults to
+    n_features and specifies the residual branch input dimension.
     depth counts hidden layers. The final linear layer is initialized to
     zero, so the initial network is exactly the identity. Other linear
     layers use orthogonal weights and zero biases. Use a nonzero initial
@@ -53,14 +55,16 @@ class ResidualMLP(ResidualNetwork):
     """
 
     def __init__(
-        self, n_features: int, *, hidden_dim: int = 768, depth: int = 1,
+        self, n_features: int, *, network_input_features: int | None = None, hidden_dim: int = 768, depth: int = 1,
         dropout: float = 0.1, initial_alpha: float = 0.25,
         trainable_alpha: bool = True,
     ) -> None:
         if n_features < 1 or hidden_dim < 1 or depth < 1:
             raise ValueError("n_features, hidden_dim, and depth must be positive.")
+        width = n_features if network_input_features is None else network_input_features
+        if width < 1:
+            raise ValueError("network_input_features must be positive.")
         layers: list[nn.Module] = []
-        width = n_features
         for _ in range(depth):
             layers.extend([nn.Linear(width, hidden_dim), nn.GELU(), nn.Dropout(dropout)])
             width = hidden_dim

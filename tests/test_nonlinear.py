@@ -166,6 +166,74 @@ class TestNonlinear(unittest.TestCase):
         model.train()
         self.assertTrue(refiner.to_torch().training)
 
+    def test_separate_inputs_default_network_validation_and_torch(self):
+        sources = [np.concatenate([v, v[:, :2]], axis=1) for v in self.views]
+        model = self.make_refiner().fit_views(
+            self.views, network_input=sources, validation_views=self.views,
+            validation_network_input=sources,
+        )
+        self.assertEqual(model.network_input_features_, 6)
+        self.assertEqual(model.model_.network[0].in_features, 6)
+        self.assertEqual(model.model_.network[-1].out_features, 4)
+        self.assertIn("validation_loss", model.history_[-1])
+        z = torch.tensor(self.views[0], requires_grad=True)
+        y = torch.tensor(sources[0], requires_grad=True)
+        output = model.to_torch()(z, network_input=y)
+        assert_allclose(model.transform(z, network_input=y), output.detach(), atol=1e-6)
+        output.sum().backward()
+        self.assertIsNotNone(z.grad)
+        self.assertIsNotNone(y.grad)
+        with self.assertRaisesRegex(ValueError, "network_input is required"):
+            model.transform(self.views[0])
+        with self.assertRaisesRegex(ValueError, "feature count"):
+            model.transform(self.views[0], network_input=self.views[0])
+        with self.assertRaisesRegex(ValueError, "validation_network_input is required"):
+            self.make_refiner().fit_views(self.views, network_input=sources, validation_views=self.views)
+        model.fit_views(self.views)
+        self.assertFalse(model.separate_network_input_)
+        self.assertEqual(model.transform(self.views[0]).shape, (12, 4))
+
+    def test_separate_inputs_alignment_imputation_and_loss_inputs(self):
+        class Branch(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.scale = nn.Parameter(torch.tensor(1.0))
+                self.seen = []
+
+            def forward(self, x):
+                self.seen.append(x.detach().clone())
+                return x[:, :4] * self.scale
+
+        X = np.concatenate(self.views)[:-1]
+        Y = np.concatenate([X, X[:, :2]], axis=1)
+        ids = np.tile(np.arange(12), 3)[:-1]
+        for impute, count in (("discard", 11), ("mean", 12)):
+            branch = Branch()
+            def objective(outputs, *, inputs):
+                for base, source in zip(inputs, branch.seen[-3:]):
+                    torch.testing.assert_close(base, source[:, :4])
+                return squared_residual(outputs, inputs=inputs)
+            model = self.make_refiner(network=branch, network_kwargs=None, loss=objective, impute=impute)
+            y = torch.tensor(Y, requires_grad=True)
+            result = model.fit_transform(X, network_input=y, sample_ids=ids)
+            self.assertEqual(model.n_samples_, count)
+            self.assertEqual(result.shape, X.shape)
+            self.assertIsNone(y.grad)
+            self.assertIs(model.model_.network, branch)
+
+    def test_separate_input_factory_and_equal_dimension_requirement(self):
+        def factory(n_features, network_input_features):
+            return nn.Linear(network_input_features, n_features)
+        model = self.make_refiner(network=factory, network_kwargs=None).fit_views(
+            self.views, network_input=self.views,
+        )
+        with self.assertRaisesRegex(ValueError, "network_input is required"):
+            model.transform(self.views[0])
+        with self.assertRaisesRegex(ValueError, "row count"):
+            self.make_refiner().fit_views(self.views, network_input=[v[:-1] for v in self.views])
+        with self.assertRaisesRegex(ValueError, "number of rows"):
+            model.transform(self.views[0], network_input=self.views[0][:-1])
+
     def test_validation_errors(self):
         with self.assertRaises(NotFittedError):
             self.make_refiner().transform(self.views[0])
