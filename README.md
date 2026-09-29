@@ -10,46 +10,36 @@ The methods are based on [*Platonic Representations in the Human Brain: Unsuperv
 pip install git+https://github.com/pablomm/neural-encoder.git
 ```
 
-## Examples
+## Usage
 
-### Linear encoder
+`NeuralEncoder` combines feature reliability weighting, PCA, distilled multiset canonical correlation analysis (MCCA), and nonlinear residual refinement. The residual network receives PCA scores and learns a correction to the MCCA embeddings.
 
-`LinearEncoder` combines feature reliability weighting, PCA, and distilled multiset canonical correlation analysis (MCCA). It learns a single projection that emphasizes structure shared across views and can be applied to individual measurements.
-
-`X_train` contains measurements as rows and features as columns. `sample_ids` and `view_ids` identify the sample and repetition or view associated with each row.
+`X_train` contains measurements as rows and features as columns. `sample_ids` and `view_ids` identify the sample and repetition or view associated with each row. Preprocessing is applied separately.
 
 ```python
-from neural_encoder.linear import LinearEncoder
+from neural_encoder import NeuralEncoder
 
-encoder = LinearEncoder(
-    pca_kwargs={"n_components": 64},
-    distilled_mcca_kwargs={"n_components": 16},
+encoder = NeuralEncoder(
+    n_components_pca=64,
+    n_components_mcca=16,
+    n_components_pca_refinement=128,
+    refiner_kwargs={
+        "network_kwargs": {"hidden_dim": 128},
+        "steps": 2000,
+        "batch_size": 256,
+    },
+    random_state=42,
 )
 Z_train = encoder.fit_transform(
     X_train, sample_ids=sample_ids, view_ids=view_ids,
 )
 Z_test = encoder.transform(X_test)
+
+# Complete fitted architecture for use in PyTorch.
+model = encoder.to_pytorch()
 ```
 
-### Nonlinear refinement
-
-`NonlinearRefiner` learns a residual transformation, `f(z) = z + alpha * g(z)`, using a multiview contrastive objective and a trainable residual coefficient. It accepts embeddings from the linear encoder or any other fixed representation.
-
-```python
-from neural_encoder.nonlinear import NonlinearRefiner
-
-refiner = NonlinearRefiner(
-    network_kwargs={"hidden_dim": 128},
-    steps=2000,
-    batch_size=256,
-)
-Z_train_refined = refiner.fit_transform(
-    Z_train, sample_ids=sample_ids, view_ids=view_ids,
-)
-Z_test_refined = refiner.transform(Z_test)
-```
-
-Custom PyTorch networks and losses can be supplied to `NonlinearRefiner`. Both estimators expose their fitted transformations as PyTorch modules through `to_torch()`.
+The two PCA dimensions are configurable independently. Equal dimensions share one PCA in both the estimator and the PyTorch architecture. Network, loss, and training settings can be configured through `refiner_kwargs`.
 
 ## Citation
 
