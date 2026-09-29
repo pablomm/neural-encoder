@@ -12,7 +12,7 @@ pip install git+https://github.com/pablomm/neural-encoder.git
 
 ## Usage
 
-`NeuralEncoder` combines feature reliability weighting, PCA, distilled multiset canonical correlation analysis (MCCA), and nonlinear residual refinement. The residual network receives PCA scores and learns a correction to the MCCA embeddings.
+`NeuralEncoder` combines feature reliability weighting, PCA, distilled multiset canonical correlation analysis (MCCA), and nonlinear residual refinement. By default, the residual network receives the MCCA embedding, reproducing the paper architecture. It can instead receive PCA scores while still learning a correction in the MCCA embedding space.
 
 `X_train` contains measurements as rows and features as columns. `sample_ids` and `view_ids` identify the sample and repetition or view associated with each row. Preprocessing is applied separately.
 
@@ -22,7 +22,6 @@ from neural_encoder import NeuralEncoder
 encoder = NeuralEncoder(
     n_components_pca=64,
     n_components_mcca=16,
-    n_components_pca_refinement=128,
     refiner_kwargs={
         "network_kwargs": {"hidden_dim": 128},
         "steps": 2000,
@@ -39,7 +38,7 @@ Z_test = encoder.transform(X_test)
 model = encoder.to_pytorch()
 ```
 
-The two PCA dimensions are configurable independently. Equal dimensions share one PCA in both the estimator and the PyTorch architecture. Network, loss, and training settings can be configured through `refiner_kwargs`.
+To drive the residual branch from PCA scores, set `refinement_input_stage="pca"`. An optional `n_components_pca_refinement` selects a separate PCA dimension; when omitted or equal to `n_components_pca`, both branches share one fitted PCA. Network, loss, and training settings can be configured through `refiner_kwargs`.
 
 ## Citation
 

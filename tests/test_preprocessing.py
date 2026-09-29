@@ -68,7 +68,7 @@ class TestMeasurementPreprocessor(unittest.TestCase):
         model = MeasurementPreprocessor()
         train = np.array([[0., 300.], [600., 900.]], dtype=np.float32)
         scaled = train / 300
-        bounds = np.quantile(scaled, [0.004, 0.996])
+        bounds = np.quantile(scaled, [0.0005, 0.9995])
         clipped = np.clip(scaled, *bounds)
         assert_allclose(model.fit_transform(train), clipped - clipped.mean(axis=0), atol=1e-7)
         assert_allclose(model.clip_bounds_, bounds)

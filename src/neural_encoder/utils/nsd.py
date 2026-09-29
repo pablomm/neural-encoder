@@ -209,7 +209,7 @@ def load_mask(
     """
 
     base_dir = resolve_nsd_path(base_dir)
-    df_masks = df_masks or get_resource("mask")
+    df_masks = df_masks if df_masks is not None else get_resource("mask")
 
     masks_file = df_masks.query(f"roi == '{roi}' and subject == {subject}")["mask_path"].values
 
@@ -265,7 +265,7 @@ def load_betas(
     """
 
     base_dir = resolve_nsd_path(base_dir)
-    df_stimuli = df_stimuli or get_resource("stimulus")
+    df_stimuli = df_stimuli if df_stimuli is not None else get_resource("stimulus")
 
     beta = df_stimuli.query(f"subject == {subject} and session == {session}").filename.values[0]
 
@@ -303,7 +303,7 @@ def get_session_indexes(
         list: A list of NSD IDs corresponding to the subject and session.
     """
     base_dir = resolve_nsd_path(base_dir)
-    df = df_stimuli or get_resource("stimulus")
+    df = df_stimuli if df_stimuli is not None else get_resource("stimulus")
 
     indexes = df.query(f"subject == {subject} and session == {session}").nsd_id.to_list()
 
@@ -344,7 +344,7 @@ def load_dataset(
         and paths adjusted according to the `base_dir`.
 
     Example:
-        >>> from neuroplatonic.utils import load_dataset
+        >>> from neural_encoder.utils.nsd import load_dataset
         >>> dataset = load_dataset(query="subject == 1 and session == 1")
         >>> print(dataset)
 
@@ -364,7 +364,6 @@ def load_dataset(
         df = get_resource("images")
     else:
         df = df_index
-    # df = df_index or get_resource("images")
 
     df["image"] = df["path"]
     df["image"] = df["image"].apply(lambda image_path: str(base_dir / image_path))

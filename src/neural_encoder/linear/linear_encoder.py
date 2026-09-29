@@ -41,7 +41,7 @@ class LinearEncoder(TransformerMixin, BaseEstimator):
         kwargs with an explicit estimator or disabled stage raises an error.
         Component counts must be valid for the data; they are not reduced
         automatically.
-    shuffle_views : bool, default=False
+    shuffle_views : bool, default=True
         Independently permute view assignments within each sample once before
         fitting. Both multiview stages use the same assignments. Measurements
         remain in their original row order, and no measurements are imputed
@@ -96,7 +96,7 @@ class LinearEncoder(TransformerMixin, BaseEstimator):
         feature_reweighting_kwargs: Mapping[str, Any] | None = None,
         pca_kwargs: Mapping[str, Any] | None = None,
         distilled_mcca_kwargs: Mapping[str, Any] | None = None,
-        shuffle_views: bool = False,
+        shuffle_views: bool = True,
         random_state: int | None = None,
     ) -> None:
         self.feature_reweighting = feature_reweighting

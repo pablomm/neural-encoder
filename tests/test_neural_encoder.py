@@ -35,7 +35,10 @@ class TestNeuralEncoder(unittest.TestCase):
 
     def test_shared_pca_and_torch_equivalence(self):
         for dimension in (None, 4):
-            model = self.make_encoder(n_components_pca_refinement=dimension)
+            model = self.make_encoder(
+                refinement_input_stage="pca",
+                n_components_pca_refinement=dimension,
+            )
             embeddings = model.fit_transform(self.X, sample_ids=self.ids)
             self.assertEqual(embeddings.shape, (48, 2))
             self.assertIs(model.refinement_pca_, model.linear_encoder_.pca_)
@@ -55,7 +58,10 @@ class TestNeuralEncoder(unittest.TestCase):
             self.assertIsNotNone(module.refiner.alpha.grad)
 
     def test_separate_pca_whitening_and_clone(self):
-        template = self.make_encoder(n_components_pca_refinement=6, pca_kwargs={"whiten": True})
+        template = self.make_encoder(
+            refinement_input_stage="pca", n_components_pca_refinement=6,
+            pca_kwargs={"whiten": True},
+        )
         model = clone(template).fit(self.X, sample_ids=self.ids)
         self.assertFalse(hasattr(template, "linear_encoder_"))
         self.assertIsNot(model.refinement_pca_, model.linear_encoder_.pca_)
@@ -72,13 +78,41 @@ class TestNeuralEncoder(unittest.TestCase):
 
     def test_custom_network_reused_and_float32_export(self):
         branch = torch.nn.Linear(6, 2)
-        model = self.make_encoder(n_components_pca_refinement=6, refiner_kwargs={
-            "steps": 2, "device": "cpu", "network": branch,
-        }).fit(self.X, sample_ids=self.ids)
+        model = self.make_encoder(
+            refinement_input_stage="pca", n_components_pca_refinement=6,
+            refiner_kwargs={
+                "steps": 2, "device": "cpu", "network": branch,
+            },
+        ).fit(self.X, sample_ids=self.ids)
         self.assertIs(model.refiner_.model_.network, branch)
         module = model.to_torch()
         assert_allclose(module(torch.tensor(self.test_X, dtype=torch.float32)).detach(),
                         model.transform(self.test_X), atol=1e-6)
+
+    def test_default_distilled_mcca_input_and_torch_equivalence(self):
+        model = self.make_encoder().fit(self.X, sample_ids=self.ids)
+        self.assertEqual(model.refinement_input_stage, "distilled_mcca")
+        self.assertIsNone(model.refinement_pca_)
+        self.assertEqual(model.refiner_.network_input_features_, 2)
+        self.assertFalse(model.refiner_.separate_network_input_)
+        module = model.to_pytorch()
+        self.assertEqual(module.refinement_input_stage, "distilled_mcca")
+        self.assertIsNone(module.refinement_pca)
+        result = module(torch.tensor(self.test_X))
+        assert_allclose(result.detach(), model.transform(self.test_X), atol=1e-10)
+
+    def test_shuffle_is_shared_by_linear_and_nonlinear_stages(self):
+        shuffled = self.make_encoder(random_state=11)
+        result = shuffled.fit_transform(self.X, sample_ids=self.ids)
+        views = np.repeat(np.arange(3), 16)
+        assignments = np.broadcast_to(np.arange(3)[:, None], (3, 16))
+        permutations = np.random.default_rng(11).permuted(assignments, axis=0)
+        expected_views = permutations[views, self.ids]
+        manual = self.make_encoder(shuffle_views=False, random_state=11)
+        expected = manual.fit_transform(
+            self.X, sample_ids=self.ids, view_ids=expected_views,
+        )
+        assert_allclose(result, expected, atol=1e-10)
 
     def test_validation_and_disabled_dimension_overrides(self):
         model = self.make_encoder()
@@ -88,6 +122,14 @@ class TestNeuralEncoder(unittest.TestCase):
             model.transform(self.X)
         with self.assertRaisesRegex(ValueError, "dimension parameters"):
             self.make_encoder(pca_kwargs={"n_components": 3}).fit(self.X, sample_ids=self.ids)
+        with self.assertRaisesRegex(ValueError, "refinement_input_stage"):
+            self.make_encoder(refinement_input_stage="unknown").fit(
+                self.X, sample_ids=self.ids,
+            )
+        with self.assertRaisesRegex(ValueError, "only valid"):
+            self.make_encoder(n_components_pca_refinement=6).fit(
+                self.X, sample_ids=self.ids,
+            )
         model.fit(self.X[:-1], sample_ids=self.ids[:-1])
         self.assertEqual(model.refiner_.n_samples_, 15)
         with self.assertRaises(ValueError):

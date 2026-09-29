@@ -133,15 +133,19 @@ class TestLinearEncoder(unittest.TestCase):
         assignments = np.broadcast_to(np.arange(3)[:, None], (3, 30))
         permutations = np.random.default_rng(42).permuted(assignments, axis=0)
         expected_ids = permutations[self.views, self.samples]
-        manual = LinearEncoder(**params).fit(self.X, sample_ids=self.samples, view_ids=expected_ids)
+        manual = LinearEncoder(**params, shuffle_views=False).fit(
+            self.X, sample_ids=self.samples, view_ids=expected_ids,
+        )
         assert_allclose(Z, manual.transform(self.X), atol=1e-12)
         assert_allclose(shuffled.feature_reweighting_.weights_, manual.feature_reweighting_.weights_)
         self.assertEqual(shuffled.pca_.random_state, 42)
 
     def test_missing_views_and_inferred_ids(self):
         params = dict(pca_kwargs={"n_components": 4}, distilled_mcca_kwargs={"n_components": 2})
-        inferred = LinearEncoder(**params).fit(self.X[:-1], sample_ids=self.samples[:-1])
-        explicit = LinearEncoder(**params).fit(
+        inferred = LinearEncoder(**params, random_state=8).fit(
+            self.X[:-1], sample_ids=self.samples[:-1],
+        )
+        explicit = LinearEncoder(**params, random_state=8).fit(
             self.X[:-1], sample_ids=self.samples[:-1], view_ids=self.views[:-1],
         )
         assert_allclose(inferred.transform(self.X), explicit.transform(self.X))

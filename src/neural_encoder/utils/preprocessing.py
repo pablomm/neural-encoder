@@ -25,7 +25,7 @@ class MeasurementPreprocessor(TransformerMixin, BaseEstimator):
         Positive divisor applied before clipping. None skips scaling. Use
         300.0 for the Natural Scenes Dataset (NSD) [2]_ beta scaling
         convention; this is dataset-specific.
-    quantile_clip : float, pair of floats, or None, default=0.004
+    quantile_clip : float, pair of floats, or None, default=0.0005
         Quantile probabilities estimated over all scaled training values.
         A scalar a specifies (a, 1-a), with 0 <= a < 0.5. A pair specifies
         (lower, upper), with 0 <= lower < upper <= 1. None skips quantile
@@ -73,7 +73,7 @@ class MeasurementPreprocessor(TransformerMixin, BaseEstimator):
     Examples
     --------
     >>> preprocessor = MeasurementPreprocessor(
-    ...     scaling=300.0, quantile_clip=0.004, feature_centering=True
+    ...     scaling=300.0, quantile_clip=0.0005, feature_centering=True
     ... )
     >>> train = preprocessor.fit_transform([[0., 300.], [600., 900.]])
     >>> test = preprocessor.transform([[300., 600.]])
@@ -83,7 +83,7 @@ class MeasurementPreprocessor(TransformerMixin, BaseEstimator):
         self,
         *,
         scaling=300.0,
-        quantile_clip=0.004,
+        quantile_clip=0.0005,
         clip_bounds=None,
         sample_centering=False,
         feature_centering=True,
