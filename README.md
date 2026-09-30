@@ -9,6 +9,7 @@
 
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![NeurIPS 2026](https://img.shields.io/badge/NeurIPS-2026-8A2BE2)](https://arxiv.org/abs/2605.20496)
+[![Run Tests](https://github.com/pablomm/neural-encoder/actions/workflows/test.yml/badge.svg)](https://github.com/pablomm/neural-encoder/actions/workflows/test.yml)
 
 **neural-encoder** is a Python package for learning embeddings from repeated measurements and multiview data. It provides a linear encoder and an optional nonlinear refinement stage through a scikit-learn-style API.
 
