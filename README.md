@@ -1,4 +1,11 @@
-# neural-encoder
+<p align="center">
+  <a href="https://github.com/pablomm/neural-encoder">
+    <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="https://github.com/pablomm/neural-encoder/raw/main/docs/assets/neural-encoder-dark.svg">
+        <img alt="neural-encoder" src="https://github.com/pablomm/neural-encoder/raw/main/docs/assets/neural-encoder.svg">
+    </picture>
+  </a>
+</p>
 
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![NeurIPS 2026](https://img.shields.io/badge/NeurIPS-2026-8A2BE2)](https://arxiv.org/abs/2605.20496)
