@@ -14,7 +14,9 @@ pip install git+https://github.com/pablomm/neural-encoder.git
 
 `NeuralEncoder` combines feature reliability weighting, PCA, distilled multiset canonical correlation analysis (MCCA), and nonlinear residual refinement. By default, the residual network receives the MCCA embedding, reproducing the paper architecture. It can instead receive PCA scores while still learning a correction in the MCCA embedding space.
 
-`X_train` contains measurements as rows and features as columns. `sample_ids` and `view_ids` identify the sample and repetition or view associated with each row. Preprocessing is applied separately.
+### Repeated measurements
+
+`X_train` contains measurements as rows and features as columns. `sample_ids` identifies which rows are measurements of the same sample. Repetitions are assigned by their order of appearance within each sample.
 
 ```python
 from neural_encoder import NeuralEncoder
@@ -30,11 +32,39 @@ encoder = NeuralEncoder(
     random_state=42,
 )
 Z_train = encoder.fit_transform(
-    X_train, sample_ids=sample_ids, view_ids=view_ids,
+    X_train, sample_ids=sample_ids,
 )
 Z_test = encoder.transform(X_test)
+```
 
-# Complete fitted architecture for use in PyTorch.
+### Aligned views
+
+When the measurements are already separated into aligned views, corresponding rows of `X1`, `X2`, and `X3` represent the same sample.
+
+```python
+from neural_encoder import NeuralEncoder
+
+encoder = NeuralEncoder(
+    n_components_pca=64,
+    n_components_mcca=16,
+    refinement_input_stage="pca",
+    n_components_pca_refinement=128,
+    refiner_kwargs={
+        "network_kwargs": {"hidden_dim": 128},
+        "steps": 2000,
+        "batch_size": 256,
+    },
+    random_state=42,
+)
+encoder.fit_views([X1, X2, X3])
+
+Z1, Z2, Z3 = (encoder.transform(X) for X in (X1, X2, X3))
+Z_test = encoder.transform(X_test)
+```
+
+Preprocessing is applied separately. The complete fitted architecture can be exported to PyTorch:
+
+```python
 model = encoder.to_pytorch()
 ```
 

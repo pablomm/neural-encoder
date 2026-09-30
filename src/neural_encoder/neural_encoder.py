@@ -1,6 +1,6 @@
 """Combined linear encoding and configurable nonlinear refinement."""
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal, Self
 
 import numpy as np
@@ -8,7 +8,7 @@ import torch
 from numpy.typing import ArrayLike, NDArray
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.decomposition import PCA
-from sklearn.utils.validation import check_is_fitted, validate_data
+from sklearn.utils.validation import check_array, check_is_fitted, validate_data
 from torch import nn
 
 from .linear import LinearEncoder
@@ -170,6 +170,28 @@ class NeuralEncoder(TransformerMixin, BaseEstimator):
         )).fit(Z, network_input=network_input, sample_ids=sample_ids, view_ids=view_ids)
         self.n_components_ = Z.shape[1]
         return self
+
+    def fit_views(self, views: Sequence[ArrayLike], y: Any = None) -> Self:
+        """Fit from aligned view matrices.
+
+        Each view must have shape (n_samples, n_features), with corresponding
+        rows representing the same sample. The optional y argument is ignored.
+        """
+        if len(views) < 2:
+            raise ValueError("At least two views are required.")
+        arrays = [
+            check_array(view, dtype=[np.float64, np.float32], ensure_min_samples=2)
+            for view in views
+        ]
+        if any(view.shape != arrays[0].shape for view in arrays):
+            raise ValueError("Views must have equal shapes with corresponding samples and features.")
+        n_samples = len(arrays[0])
+        return self.fit(
+            np.concatenate(arrays),
+            y,
+            sample_ids=np.tile(np.arange(n_samples), len(arrays)),
+            view_ids=np.repeat(np.arange(len(arrays)), n_samples),
+        )
 
     def _representations(self, X: NDArray) -> tuple[NDArray, NDArray]:
         weighted = self.linear_encoder_.feature_reweighting_.transform(X)

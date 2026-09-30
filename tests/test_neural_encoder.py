@@ -114,6 +114,18 @@ class TestNeuralEncoder(unittest.TestCase):
         )
         assert_allclose(result, expected, atol=1e-10)
 
+    def test_fit_views_matches_matrix_interface(self):
+        views = np.split(self.X, 3)
+        direct = self.make_encoder().fit(self.X, sample_ids=self.ids)
+        aligned = self.make_encoder().fit_views(views)
+        assert_allclose(
+            aligned.transform(self.test_X), direct.transform(self.test_X), atol=1e-10,
+        )
+        with self.assertRaisesRegex(ValueError, "At least two views"):
+            self.make_encoder().fit_views(views[:1])
+        with self.assertRaisesRegex(ValueError, "equal shapes"):
+            self.make_encoder().fit_views([views[0], views[1][:-1]])
+
     def test_validation_and_disabled_dimension_overrides(self):
         model = self.make_encoder()
         with self.assertRaises(NotFittedError):
