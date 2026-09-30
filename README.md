@@ -1,5 +1,8 @@
 # neural-encoder
 
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![NeurIPS 2026](https://img.shields.io/badge/NeurIPS-2026-8A2BE2)](https://arxiv.org/abs/2605.20496)
+
 **neural-encoder** is a Python package for learning embeddings from repeated measurements and multiview data. It provides a linear encoder and an optional nonlinear refinement stage through a scikit-learn-style API.
 
 The methods are based on [*Platonic Representations in the Human Brain: Unsupervised Recovery of Universal Geometry*](https://arxiv.org/abs/2605.20496). Developed for fMRI, they apply more generally to repeated or multiview measurements with a common feature space.
