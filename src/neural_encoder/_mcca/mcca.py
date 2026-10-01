@@ -24,9 +24,9 @@ from ._base import BaseCCA, _check_regs, _initial_svds, _deterministic_decomp
 
 class MCCA(BaseCCA):
     r"""
-    Multiview canonical correlation analysis for any number of views. Includes
-    options for regularized MCCA and informative MCCA (where a low rank PCA is
-    first computed).
+    Multiview canonical correlation analysis for any number of views
+    [#1mcca]_. Includes options for regularized MCCA [#2mcca]_ and informative
+    MCCA (where a low rank PCA is first computed).
 
     Parameters
     ----------
@@ -169,9 +169,8 @@ class MCCA(BaseCCA):
         Returns
         -------
         Xs_hat : list of array-likes
-            - Xs_hat length: n_views
-            - Xs_hat[i] shape: (n_samples, n_features_i)
-            The reconstructed views
+            Reconstructed views. The list has length ``n_views`` and each item
+            has shape ``(n_samples, n_features_i)``.
         """
         check_is_fitted(self)
         scores = check_Xs(scores)
@@ -217,9 +216,8 @@ class MCCA(BaseCCA):
         Parameters
         ----------
         Xs : list of array-likes or numpy.ndarray
-            - Xs length: n_views
-            - Xs[i] shape: (n_samples, n_features_i)
-            The views to reconstruct and score
+            Views to reconstruct and score. The list has length ``n_views``
+            and each item has shape ``(n_samples, n_features_i)``.
 
         y : None
             Ignored variable.

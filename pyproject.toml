@@ -23,6 +23,7 @@ dependencies = [
 [project.optional-dependencies]
 utils = ["datasets", "pillow", "tqdm"]
 wandb = ["wandb"]
+docs = ["sphinx>=8", "furo>=2024.8.6"]
 
 [tool.setuptools.dynamic]
 version = { attr = "neural_encoder.__version__" }

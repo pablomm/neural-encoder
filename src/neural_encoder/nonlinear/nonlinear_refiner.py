@@ -105,7 +105,7 @@ class NonlinearRefiner(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
     encoder is fitted or updated. Each fit resets the optimizer, history, and
     alpha. Supplied modules retain their current parameters; default networks
     and network factories create a new network on each fit.
-    transform accepts arrays or tensors and returns NumPy; model_ is the
+    transform accepts arrays or tensors and returns NumPy; ``model_`` is the
     direct PyTorch interface. Validation views must be held out by sample
     identity by the caller and contain at least three aligned samples.
     """

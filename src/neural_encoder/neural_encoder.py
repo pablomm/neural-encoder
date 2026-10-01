@@ -91,7 +91,7 @@ class NeuralEncoder(TransformerMixin, BaseEstimator):
         Fitted feature reweighting, PCA, and distilled MCCA pipeline.
     refinement_pca_ : PCA or None
         PCA feeding the residual branch in PCA mode; identical to
-        linear_encoder_.pca_ when the requested dimensions match. None in
+        ``linear_encoder_.pca_`` when the requested dimensions match. None in
         distilled-MCCA mode.
     refiner_ : NonlinearRefiner
         Fitted residual estimator.

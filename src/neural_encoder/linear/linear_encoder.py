@@ -60,7 +60,7 @@ class LinearEncoder(TransformerMixin, BaseEstimator):
     distilled_mcca_ : DistilledMCCA or None
         Fitted distilled MCCA stage.
     coef_ : ndarray of shape (n_components, n_features)
-        Combined coefficients. Transform computes X @ coef_.T + intercept_.
+        Combined coefficients. Transform computes ``X @ coef_.T + intercept_``.
     intercept_ : ndarray of shape (n_components,)
         Combined offset, accounting for PCA centering and MCCA distillation.
     n_features_in_ : int

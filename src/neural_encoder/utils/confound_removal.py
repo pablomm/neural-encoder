@@ -29,7 +29,7 @@ class ConfoundRemover(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
     Attributes
     ----------
     coef_ : ndarray of shape (n_features, n_confounds)
-        Regression coefficients. The confound prediction is C @ coef_.T.
+        Regression coefficients. The confound prediction is ``C @ coef_.T``.
     n_features_in_ : int
         Number of measurement features fitted.
     n_confounds_in_ : int
