@@ -59,7 +59,7 @@ Preprocessing
 -------------
 
 Preprocessing is intentionally separate from the encoder. The provided
-``MeasurementPreprocessor`` supports clipping, scaling, feature or row
+``BetaPreprocessor`` supports clipping, scaling, feature or row
 centering, feature standardization, and row normalization. When measurements
 are acquired in sessions, ``SessionStandardScaler`` standardizes each feature
 within each session, using statistics learned from that session's training
@@ -75,4 +75,4 @@ subtracts the predicted component.
    :class:`neural_encoder.NeuralEncoder`,
    :class:`neural_encoder.linear.LinearEncoder`,
    :class:`neural_encoder.nonlinear.NonlinearRefiner`, and
-   :class:`neural_encoder.utils.MeasurementPreprocessor`.
+   :class:`neural_encoder.preprocessing.BetaPreprocessor`.

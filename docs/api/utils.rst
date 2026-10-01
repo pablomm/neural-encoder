@@ -3,24 +3,12 @@ Utilities
 
 .. currentmodule:: neural_encoder.utils
 
-Preprocessing and data organization
------------------------------------
+Data organization
+-----------------
 
 .. autosummary::
 
-   MeasurementPreprocessor
-   SessionStandardScaler
-   ConfoundRemover
    split_views
-
-.. autoclass:: MeasurementPreprocessor
-   :members:
-
-.. autoclass:: SessionStandardScaler
-   :members:
-
-.. autoclass:: ConfoundRemover
-   :members:
 
 .. autofunction:: split_views
 

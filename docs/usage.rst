@@ -35,17 +35,18 @@ refer to the same sample in every view.
 Preprocessing measurements
 --------------------------
 
-``MeasurementPreprocessor`` implements the preprocessing used for the neural
-measurements in the paper. Its defaults divide measurements by 300, clip
-feature values using the 0.004 and 0.996 training quantiles, replace non-finite
-values with zero, and center every feature. Learned quantiles and feature
+``BetaPreprocessor`` implements the preprocessing of single-trial fMRI
+response estimates (betas) used in the paper. Its defaults replace NaNs with
+zero, divide by 300 (the NSD beta storage convention), clip values at the
+0.0005 and 0.9995 training quantiles, and center every feature. Pass
+``scaling=None`` for betas already in percent signal change. Learned quantiles and feature
 statistics are reused by ``transform``.
 
 .. code-block:: python
 
-   from neural_encoder.utils import MeasurementPreprocessor
+   from neural_encoder.preprocessing import BetaPreprocessor
 
-   preprocessing = MeasurementPreprocessor()
+   preprocessing = BetaPreprocessor()
    X_train = preprocessing.fit_transform(X_train_raw)
    X_test = preprocessing.transform(X_test_raw)
 

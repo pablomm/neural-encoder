@@ -6,13 +6,13 @@ from sklearn.base import clone
 from sklearn.exceptions import NotFittedError
 from sklearn.pipeline import Pipeline
 
-from neural_encoder.utils.preprocessing import MeasurementPreprocessor
+from neural_encoder.preprocessing import BetaPreprocessor
 
 
-class TestMeasurementPreprocessor(unittest.TestCase):
+class TestBetaPreprocessor(unittest.TestCase):
     def test_feature_scaling_and_fitted_statistics(self):
         train = np.array([[1., 10., 5.], [3., 14., 5.]], dtype=np.float32)
-        model = MeasurementPreprocessor(
+        model = BetaPreprocessor(
             scaling=None, quantile_clip=None, feature_scaling=True,
         )
         result = model.fit_transform(train)
@@ -27,7 +27,7 @@ class TestMeasurementPreprocessor(unittest.TestCase):
         self.assertIsNone(model.feature_scale_)
 
     def test_feature_scaling_order(self):
-        model = MeasurementPreprocessor(
+        model = BetaPreprocessor(
             scaling=2, quantile_clip=None, clip_bounds=(0, 8),
             sample_centering=True, feature_scaling=True, normalize=True,
         )
@@ -42,7 +42,7 @@ class TestMeasurementPreprocessor(unittest.TestCase):
     def test_fitted_statistics_and_batch_independence(self):
         train = np.array([[0., 2.], [4., 6.], [8., 10.]])
         original = train.copy()
-        model = MeasurementPreprocessor(scaling=2, quantile_clip=0.2, feature_centering=True)
+        model = BetaPreprocessor(scaling=2, quantile_clip=0.2, feature_centering=True)
         model.fit(train)
         assert_allclose(model.clip_bounds_, [1, 4])
         assert_allclose(model.feature_mean_, [7 / 3, 8 / 3])
@@ -55,7 +55,7 @@ class TestMeasurementPreprocessor(unittest.TestCase):
         assert_allclose(model.clip_bounds_, [1, 4])
 
     def test_centering_order_and_normalization(self):
-        model = MeasurementPreprocessor(
+        model = BetaPreprocessor(
             scaling=None, quantile_clip=None, clip_bounds=(0, 8), sample_centering=True,
             feature_centering=True, normalize=True,
         )
@@ -65,7 +65,7 @@ class TestMeasurementPreprocessor(unittest.TestCase):
                                  [-2**-0.5, 2**-0.5], [0, 0]], atol=1e-7)
 
     def test_defaults_nan_policy_and_refit(self):
-        model = MeasurementPreprocessor()
+        model = BetaPreprocessor()
         train = np.array([[0., 300.], [600., 900.]], dtype=np.float32)
         scaled = train / 300
         bounds = np.quantile(scaled, [0.0005, 0.9995])
@@ -74,12 +74,12 @@ class TestMeasurementPreprocessor(unittest.TestCase):
         assert_allclose(model.clip_bounds_, bounds)
         assert_allclose(model.feature_mean_, clipped.mean(axis=0))
         self.assertFalse(model.sample_centering)
-        model = MeasurementPreprocessor(scaling=None, quantile_clip=None, feature_centering=False)
+        model = BetaPreprocessor(scaling=None, quantile_clip=None, feature_centering=False)
         assert_array_equal(model.fit_transform([[1, 2], [3, 4]]), [[1, 2], [3, 4]])
         assert_array_equal(model.transform([[np.nan, 1]]), [[0, 1]])
         with self.assertRaises(ValueError):
-            MeasurementPreprocessor(fill_value=None).fit([[1, 2]]).transform([[np.nan, 1]])
-        filled = MeasurementPreprocessor(fill_value=0, scaling=2, quantile_clip=None, feature_centering=False)
+            BetaPreprocessor(fill_value=None).fit([[1, 2]]).transform([[np.nan, 1]])
+        filled = BetaPreprocessor(fill_value=0, scaling=2, quantile_clip=None, feature_centering=False)
         assert_array_equal(filled.fit_transform([[np.nan, 2]]), [[0, 1]])
         with self.assertRaises(ValueError):
             filled.transform([[np.inf, 1]])
@@ -90,17 +90,17 @@ class TestMeasurementPreprocessor(unittest.TestCase):
 
     def test_validation(self):
         with self.assertRaises(NotFittedError):
-            MeasurementPreprocessor().transform([[1, 2]])
+            BetaPreprocessor().transform([[1, 2]])
         for params in [dict(scaling=0), dict(quantile_clip=0.6),
                        dict(quantile_clip=(-0.1, 0.9)), dict(clip_bounds=(2, 1)),
                        dict(quantile_clip=0.1, clip_bounds=(0, 1)), dict(dtype=int)]:
             with self.subTest(params=params), self.assertRaises(ValueError):
-                MeasurementPreprocessor(**params).fit([[1, 2]])
+                BetaPreprocessor(**params).fit([[1, 2]])
         with self.assertRaises(ValueError):
-            MeasurementPreprocessor().fit([[1, 2]]).transform([[1, 2, 3]])
+            BetaPreprocessor().fit([[1, 2]]).transform([[1, 2, 3]])
 
     def test_pipeline_clone_and_large_norms(self):
-        model = MeasurementPreprocessor(
+        model = BetaPreprocessor(
             scaling=None, quantile_clip=None, feature_centering=False,
             normalize=True, dtype=np.float64,
         )

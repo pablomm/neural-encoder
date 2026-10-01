@@ -1,4 +1,4 @@
-"""Dataset-independent preprocessing of sample-by-feature measurements."""
+"""Preprocessing of single-trial fMRI response estimates (betas)."""
 
 from numbers import Real
 
@@ -6,14 +6,16 @@ import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.utils.validation import check_array, check_is_fitted
 
-__all__ = ["MeasurementPreprocessor"]
+__all__ = ["BetaPreprocessor"]
 
 
-class MeasurementPreprocessor(TransformerMixin, BaseEstimator):
-    """Scale, clip, center, and optionally normalize measurements.
+class BetaPreprocessor(TransformerMixin, BaseEstimator):
+    """Scale, clip, center, and optionally normalize single-trial fMRI betas.
 
-    fMRI preprocessing applied in *Platonic Representations
-    in the Human Brain: Unsupervised Recovery of Universal Geometry* [1]_.
+    Preprocessing of single-trial GLM response estimates applied in
+    *Platonic Representations in the Human Brain: Unsupervised Recovery of
+    Universal Geometry* [1]_. Rows are trials and columns are voxels or
+    vertices.
 
     Applies the following steps: replace NaNs, scale, clip, center samples,
     center features, scale features, normalize samples. Clipping bounds and
@@ -23,8 +25,9 @@ class MeasurementPreprocessor(TransformerMixin, BaseEstimator):
     ----------
     scaling : float or None, default=300.0
         Positive divisor applied before clipping. None skips scaling. Use
-        300.0 for the Natural Scenes Dataset (NSD) [2]_ beta scaling
-        convention; this is dataset-specific.
+        300.0 for the Natural Scenes Dataset (NSD) [2]_, which stores betas
+        multiplied by 300; use None for betas already in percent signal
+        change.
     quantile_clip : float, pair of floats, or None, default=0.0005
         Quantile probabilities estimated over all scaled training values.
         A scalar a specifies (a, 1-a), with 0 <= a < 0.5. A pair specifies
@@ -72,7 +75,7 @@ class MeasurementPreprocessor(TransformerMixin, BaseEstimator):
 
     Examples
     --------
-    >>> preprocessor = MeasurementPreprocessor(
+    >>> preprocessor = BetaPreprocessor(
     ...     scaling=300.0, quantile_clip=0.0005, feature_centering=True
     ... )
     >>> train = preprocessor.fit_transform([[0., 300.], [600., 900.]])
@@ -187,7 +190,7 @@ class MeasurementPreprocessor(TransformerMixin, BaseEstimator):
         X = self._prepare(X)
         if X.shape[1] != self.n_features_in_:
             raise ValueError(
-                f"X has {X.shape[1]} features, but MeasurementPreprocessor is expecting "
+                f"X has {X.shape[1]} features, but BetaPreprocessor is expecting "
                 f"{self.n_features_in_} features as input."
             )
         X = self._clip_and_center_samples(X)

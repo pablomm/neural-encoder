@@ -1,4 +1,4 @@
-"""Utilities for loading and preprocessing measurements."""
+"""Utilities for organizing multiview data, evaluation, and training logs."""
 
 import lazy_loader as lazy
 from typing import TYPE_CHECKING
@@ -6,10 +6,7 @@ from typing import TYPE_CHECKING
 __getattr__, __dir__, __all__ = lazy.attach(
     __name__,
     submod_attrs={
-        "preprocessing": ["MeasurementPreprocessor"],
-        "session_scaling": ["SessionStandardScaler"],
         "split_views": ["split_views"],
-        "confound_removal": ["ConfoundRemover"],
         "logging": ["ConsoleLogger", "TrainingLogger", "RunningAverages", "AveragingLogger", "WandbLogger"],
         "evaluation": ["retrieval_metrics", "compute_rsa", "evaluate_pair", "evaluate_views"],
     },
@@ -17,12 +14,9 @@ __getattr__, __dir__, __all__ = lazy.attach(
 
 if TYPE_CHECKING:
     from .split_views import split_views
-    from .preprocessing import MeasurementPreprocessor
-    from .session_scaling import SessionStandardScaler
-    from .confound_removal import ConfoundRemover
     from .logging import ConsoleLogger, TrainingLogger, RunningAverages, AveragingLogger, WandbLogger
     from .evaluation import retrieval_metrics, compute_rsa, evaluate_pair, evaluate_views
 
-__all__ = ["MeasurementPreprocessor", "SessionStandardScaler", "split_views", "ConfoundRemover", "ConsoleLogger", "TrainingLogger",
+__all__ = ["split_views", "ConsoleLogger", "TrainingLogger",
            "RunningAverages", "AveragingLogger", "WandbLogger",
            "retrieval_metrics", "compute_rsa", "evaluate_pair", "evaluate_views"]

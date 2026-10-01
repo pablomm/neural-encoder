@@ -5,7 +5,7 @@ from numpy.testing import assert_allclose, assert_array_equal
 from sklearn.base import clone
 from sklearn.exceptions import NotFittedError
 
-from neural_encoder.utils import ConfoundRemover
+from neural_encoder.preprocessing import ConfoundRemover
 
 
 class TestConfoundRemover(unittest.TestCase):
