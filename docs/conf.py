@@ -55,6 +55,7 @@ intersphinx_mapping = {
 html_theme = "furo"
 html_title = "neural-encoder"
 html_static_path = ["assets"]
+html_css_files = ["custom.css"]
 html_theme_options = {
     "light_logo": "neural-encoder.svg",
     "dark_logo": "neural-encoder-dark.svg",

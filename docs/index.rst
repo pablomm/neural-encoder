@@ -13,6 +13,18 @@
 neural-encoder
 ==============
 
+.. raw:: html
+
+   <p class="badges">
+     <a href="https://arxiv.org/abs/2605.20496"><img alt="NeurIPS 2026" src="https://img.shields.io/badge/NeurIPS-2026-8A2BE2"></a>
+     <a href="https://www.python.org/"><img alt="Python 3.12+" src="https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white"></a>
+     <a href="https://pypi.org/project/neural-encoder/"><img alt="PyPI version" src="https://img.shields.io/pypi/v/neural-encoder.svg"></a>
+     <a href="https://github.com/pablomm/neural-encoder/actions/workflows/test.yml"><img alt="Run Tests" src="https://github.com/pablomm/neural-encoder/actions/workflows/test.yml/badge.svg"></a>
+     <a href="https://neural-encoder.readthedocs.io/en/latest/"><img alt="Documentation Status" src="https://readthedocs.org/projects/neural-encoder/badge/?version=latest"></a>
+     <a href="https://github.com/pablomm/neural-encoder/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-green.svg"></a>
+     <a href="https://github.com/pablomm/neural-encoder"><img alt="GitHub" src="https://img.shields.io/badge/GitHub-pablomm%2Fneural--encoder-181717?logo=github"></a>
+   </p>
+
 **neural-encoder** learns embeddings from repeated measurements and multiview
 data. It was designed for single-trial fMRI responses and other
 high-dimensional, noisy measurements in which several observations correspond
@@ -71,6 +83,7 @@ export.
 
    api/index
    citation
+   acknowledgements
 
 Indices
 -------

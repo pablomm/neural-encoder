@@ -18,6 +18,8 @@
 
 The methods are based on [*Platonic Representations in the Human Brain: Unsupervised Recovery of Universal Geometry*](https://arxiv.org/abs/2605.20496). Originally developed for single-trial fMRI responses, they apply more generally to repeated or multiview measurements with a common feature space. They project noisy observations into a low-dimensional embedding that captures the signal shared across repetitions or views. The methods require repeated measurements during training, but work with individual measurements at inference time; multiple repetitions are not required for inference.
 
+**neural-encoder** is developed by the [Dynamics of Memory Formation (DMF)](https://www.ub.edu/brainvitge/groups/memory_formation/) group at the University of Barcelona.
+
 ## Installation
 
 Via PyPI:
