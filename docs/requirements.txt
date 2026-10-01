@@ -1,2 +1,4 @@
 sphinx>=8
 furo>=2024.8.6
+myst-nb>=1.1
+sphinx-design>=0.6

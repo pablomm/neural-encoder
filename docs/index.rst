@@ -63,6 +63,7 @@ export.
    installation
    concepts
    usage
+   examples/index
 
 .. toctree::
    :maxdepth: 2

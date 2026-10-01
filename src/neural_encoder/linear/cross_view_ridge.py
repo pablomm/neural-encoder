@@ -36,7 +36,7 @@ class CrossViewRidge(TransformerMixin, BaseEstimator):
     Attributes
     ----------
     coef_ : ndarray of shape (n_features, n_features)
-        Regression coefficients. Transform computes X @ coef_.T + intercept_.
+        Regression coefficients. Transform computes ``X @ coef_.T + intercept_``.
     intercept_ : ndarray of shape (n_features,)
         Offset, or zeros when fit_intercept is False.
     alpha_ : float

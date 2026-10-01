@@ -25,6 +25,8 @@ extensions = [
     "sphinx.ext.mathjax",
     "sphinx.ext.napoleon",
     "sphinx.ext.viewcode",
+    "myst_nb",
+    "sphinx_design",
 ]
 
 autosummary_generate = True
@@ -35,7 +37,12 @@ napoleon_google_docstring = False
 napoleon_numpy_docstring = True
 
 templates_path = ["_templates"]
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "**.ipynb_checkpoints"]
+
+# Notebooks are rendered from their stored outputs and never executed, since
+# they rely on data that is not available during the documentation build.
+nb_execution_mode = "off"
+myst_enable_extensions = ["dollarmath", "amsmath"]
 
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),

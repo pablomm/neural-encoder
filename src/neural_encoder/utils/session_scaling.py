@@ -40,7 +40,7 @@ class SessionStandardScaler(TransformerMixin, BaseEstimator):
     sessions_ : ndarray of shape (n_sessions,)
         Sessions with their own statistics.
     means_ : ndarray of shape (n_sessions, n_features)
-        Per-session feature means, in the order of sessions_.
+        Per-session feature means, in the order of ``sessions_``.
     scales_ : ndarray of shape (n_sessions, n_features)
         Per-session feature standard deviations, zeros replaced by 1.
     mean_ : ndarray of shape (n_features,)
