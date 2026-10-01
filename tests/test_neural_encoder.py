@@ -7,6 +7,7 @@ from sklearn.base import clone
 from sklearn.exceptions import NotFittedError
 
 from neural_encoder import NeuralEncoder
+from neural_encoder.linear import CrossViewRidge, LinearEncoder
 
 
 class TestNeuralEncoder(unittest.TestCase):
@@ -100,6 +101,39 @@ class TestNeuralEncoder(unittest.TestCase):
         self.assertIsNone(module.refinement_pca)
         result = module(torch.tensor(self.test_X))
         assert_allclose(result.detach(), model.transform(self.test_X), atol=1e-10)
+
+    def test_cross_view_ridge_flag(self):
+        default = self.make_encoder().fit(self.X, sample_ids=self.ids)
+        self.assertTrue(default.cross_view_ridge)
+        self.assertIsInstance(default.linear_encoder_.cross_view_ridge_, CrossViewRidge)
+        tuned = self.make_encoder(cross_view_ridge_kwargs={"alphas": [3.0]}).fit(self.X, sample_ids=self.ids)
+        self.assertEqual(tuned.linear_encoder_.cross_view_ridge_.alpha_, 3.0)
+        for flag in (True, False):
+            for stage in ("distilled_mcca", "pca"):
+                with self.subTest(cross_view_ridge=flag, stage=stage):
+                    model = self.make_encoder(cross_view_ridge=flag, refinement_input_stage=stage)
+                    model.fit(self.X, sample_ids=self.ids)
+                    linear = model.linear_encoder_
+                    self.assertEqual(linear.cross_view_ridge_ is not None, flag)
+                    # The embedding fed to the refiner is the combined linear encoding.
+                    embedding, source = model._representations(self.test_X)
+                    assert_allclose(embedding, linear.transform(self.test_X), atol=1e-10)
+                    if stage == "pca":
+                        assert_allclose(source, linear.transform_until(self.test_X, stage="pca"), atol=1e-10)
+                    result = model.to_pytorch()(torch.tensor(self.test_X))
+                    assert_allclose(result.detach(), model.transform(self.test_X), atol=1e-10)
+        # Without the denoiser, the linear stage is reweighting, PCA, and MCCA.
+        skipped = self.make_encoder(cross_view_ridge=False).fit(self.X, sample_ids=self.ids)
+        original = LinearEncoder(
+            pca_kwargs={"n_components": 4}, cross_view_ridge=None,
+            distilled_mcca_kwargs={"n_components": 2}, random_state=7,
+        ).fit(self.X, sample_ids=self.ids)
+        assert_allclose(skipped.linear_encoder_.transform(self.test_X), original.transform(self.test_X), atol=1e-10)
+        self.assertFalse(np.allclose(skipped.transform(self.test_X), default.transform(self.test_X)))
+        with self.assertRaisesRegex(ValueError, "cross_view_ridge must be a boolean"):
+            self.make_encoder(cross_view_ridge="yes").fit(self.X, sample_ids=self.ids)
+        with self.assertRaisesRegex(ValueError, "requires cross_view_ridge=True"):
+            self.make_encoder(cross_view_ridge=False, cross_view_ridge_kwargs={}).fit(self.X, sample_ids=self.ids)
 
     def test_shuffle_is_shared_by_linear_and_nonlinear_stages(self):
         shuffled = self.make_encoder(random_state=11)

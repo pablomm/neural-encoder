@@ -65,6 +65,7 @@ configure each internal estimator without replacing it:
        n_components_mcca=128,
        feature_reweighting_kwargs={"weighting": "sqrt"},
        pca_kwargs={"whiten": False},
+       cross_view_ridge_kwargs={"alphas": [1e2, 1e3, 1e4, 1e5]},
        distilled_mcca_kwargs={"mcca_reg": 0.1},
        refiner_kwargs={
            "steps": 2_000,
@@ -73,6 +74,14 @@ configure each internal estimator without replacing it:
        },
        random_state=0,
    )
+
+The PCA scores are denoised by ``CrossViewRidge`` before MCCA. Pass
+``cross_view_ridge=False`` to skip this stage and fit MCCA directly on the PCA
+scores, as in the paper architecture:
+
+.. code-block:: python
+
+   encoder = NeuralEncoder(cross_view_ridge=False, random_state=0)
 
 By default, the nonlinear network receives the distilled MCCA embedding. To
 use PCA scores as its input while keeping the MCCA output as the residual base:
@@ -137,6 +146,7 @@ requires direct access to intermediate representations:
    linear = LinearEncoder().fit(X_train, sample_ids=sample_ids)
    Z_linear = linear.transform(X_train)
    Z_pca = linear.transform_until(X_train, stage="pca")
+   Z_denoised = linear.transform_until(X_train, stage="cross_view_ridge")
 
    refiner = NonlinearRefiner().fit(
        Z_linear,

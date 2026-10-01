@@ -21,9 +21,10 @@ __all__ = ["NeuralEncoder", "NeuralEncoderModule"]
 class NeuralEncoderModule(nn.Module):
     """PyTorch encoder with an MCCA or PCA residual input.
 
-    PCA layers include feature reweighting and centering. In PCA-input mode,
-    when refinement_pca is None, the linear PCA output is computed once and
-    used by both branches.
+    PCA layers include feature reweighting and centering. The MCCA layer
+    includes the cross-view ridge denoiser when it is enabled, so it maps PCA
+    scores directly to the embedding. In PCA-input mode, when refinement_pca
+    is None, the linear PCA output is computed once and used by both branches.
     """
 
     def __init__(
@@ -60,7 +61,7 @@ class NeuralEncoder(TransformerMixin, BaseEstimator):
     Parameters
     ----------
     n_components_pca : int, default=768
-        PCA dimension feeding the linear encoder's distilled MCCA.
+        PCA dimension feeding the linear encoder's denoiser and distilled MCCA.
     n_components_mcca : int, default=128
         Final embedding dimension.
     n_components_pca_refinement : int or None, default=None
@@ -68,12 +69,18 @@ class NeuralEncoder(TransformerMixin, BaseEstimator):
         is "pca". None uses the linear PCA dimension. Equal dimensions reuse
         the same fitted PCA and its scores. Must be None in distilled-MCCA mode.
     refinement_input_stage : {"distilled_mcca", "pca"}, default="distilled_mcca"
-        Representation supplied to the residual branch. The default reproduces
-        the paper architecture, z + alpha*g(z). PCA mode supplies PCA scores to
-        a branch whose output still matches the distilled MCCA dimension.
-    feature_reweighting_kwargs, pca_kwargs, distilled_mcca_kwargs : dict or None
+        Representation supplied to the residual branch. The default computes
+        z + alpha*g(z), as in the paper architecture. PCA mode supplies PCA
+        scores (not denoised) to a branch whose output still matches the
+        distilled MCCA dimension.
+    cross_view_ridge : bool, default=True
+        Denoise the PCA scores with CrossViewRidge before distilled MCCA.
+        False fits MCCA directly on the PCA scores, reproducing the paper
+        architecture.
+    feature_reweighting_kwargs, pca_kwargs, cross_view_ridge_kwargs, distilled_mcca_kwargs : dict or None
         Settings for the linear stages. Component counts are controlled by the
         dimension parameters above. pca_kwargs applies to both PCAs.
+        cross_view_ridge_kwargs requires cross_view_ridge=True.
     refiner_kwargs : dict or None
         NonlinearRefiner settings, including network, loss, optimizer, training,
         device, and logger options. Supplied network and loss modules are used
@@ -88,7 +95,8 @@ class NeuralEncoder(TransformerMixin, BaseEstimator):
     Attributes
     ----------
     linear_encoder_ : LinearEncoder
-        Fitted feature reweighting, PCA, and distilled MCCA pipeline.
+        Fitted feature reweighting, PCA, cross-view ridge (if enabled), and
+        distilled MCCA pipeline.
     refinement_pca_ : PCA or None
         PCA feeding the residual branch in PCA mode; identical to
         ``linear_encoder_.pca_`` when the requested dimensions match. None in
@@ -103,8 +111,10 @@ class NeuralEncoder(TransformerMixin, BaseEstimator):
         self, *, n_components_pca: int = 768, n_components_mcca: int = 128,
         n_components_pca_refinement: int | None = None,
         refinement_input_stage: Literal["distilled_mcca", "pca"] = "distilled_mcca",
+        cross_view_ridge: bool = True,
         feature_reweighting_kwargs: Mapping[str, Any] | None = None,
         pca_kwargs: Mapping[str, Any] | None = None,
+        cross_view_ridge_kwargs: Mapping[str, Any] | None = None,
         distilled_mcca_kwargs: Mapping[str, Any] | None = None,
         refiner_kwargs: Mapping[str, Any] | None = None,
         shuffle_views: bool = True, random_state: int | None = None,
@@ -113,8 +123,10 @@ class NeuralEncoder(TransformerMixin, BaseEstimator):
         self.n_components_mcca = n_components_mcca
         self.n_components_pca_refinement = n_components_pca_refinement
         self.refinement_input_stage = refinement_input_stage
+        self.cross_view_ridge = cross_view_ridge
         self.feature_reweighting_kwargs = feature_reweighting_kwargs
         self.pca_kwargs = pca_kwargs
+        self.cross_view_ridge_kwargs = cross_view_ridge_kwargs
         self.distilled_mcca_kwargs = distilled_mcca_kwargs
         self.refiner_kwargs = refiner_kwargs
         self.shuffle_views = shuffle_views
@@ -140,6 +152,10 @@ class NeuralEncoder(TransformerMixin, BaseEstimator):
             )
         if not isinstance(self.shuffle_views, (bool, np.bool_)):
             raise ValueError("shuffle_views must be a boolean.")
+        if not isinstance(self.cross_view_ridge, (bool, np.bool_)):
+            raise ValueError("cross_view_ridge must be a boolean.")
+        if not self.cross_view_ridge and self.cross_view_ridge_kwargs is not None:
+            raise ValueError("cross_view_ridge_kwargs requires cross_view_ridge=True.")
         sample_ids, view_ids = _resolve_view_ids(
             sample_ids, view_ids, len(X), self.shuffle_views, self.random_state,
         )
@@ -150,6 +166,8 @@ class NeuralEncoder(TransformerMixin, BaseEstimator):
         self.linear_encoder_ = LinearEncoder(
             feature_reweighting_kwargs=self.feature_reweighting_kwargs,
             pca_kwargs=pca_kwargs | {"n_components": self.n_components_pca},
+            cross_view_ridge="default" if self.cross_view_ridge else None,
+            cross_view_ridge_kwargs=self.cross_view_ridge_kwargs if self.cross_view_ridge else None,
             distilled_mcca_kwargs=mcca_kwargs | {"n_components": self.n_components_mcca},
             shuffle_views=False, random_state=self.random_state,
         ).fit(X, sample_ids=sample_ids, view_ids=view_ids)
@@ -196,7 +214,9 @@ class NeuralEncoder(TransformerMixin, BaseEstimator):
     def _representations(self, X: NDArray) -> tuple[NDArray, NDArray]:
         weighted = self.linear_encoder_.feature_reweighting_.transform(X)
         scores = self.linear_encoder_.pca_.transform(weighted)
-        embedding = self.linear_encoder_.distilled_mcca_.transform(scores)
+        ridge = self.linear_encoder_.cross_view_ridge_
+        denoised = scores if ridge is None else ridge.transform(scores)
+        embedding = self.linear_encoder_.distilled_mcca_.transform(denoised)
         if self.refinement_input_stage == "distilled_mcca":
             source = embedding
         else:
@@ -235,17 +255,21 @@ class NeuralEncoder(TransformerMixin, BaseEstimator):
 
         def pca_layer(pca: PCA) -> nn.Linear:
             coef, intercept = _combine_projections(
-                self.linear_encoder_.feature_reweighting_, pca, None, self.n_features_in_,
+                self.linear_encoder_.feature_reweighting_, pca, None, None, self.n_features_in_,
             )
             return _linear_layer(coef, intercept, self.refiner_.device_, self.refiner_.dtype)
 
-        mcca = self.linear_encoder_.distilled_mcca_
+        # The denoiser and MCCA compose into one map from PCA scores.
+        mcca_coef, mcca_intercept = _combine_projections(
+            None, None, self.linear_encoder_.cross_view_ridge_, self.linear_encoder_.distilled_mcca_,
+            self.n_components_pca,
+        )
         separate = None
         if self.refinement_input_stage == "pca" and self.refinement_pca_ is not self.linear_encoder_.pca_:
             separate = pca_layer(self.refinement_pca_)
         model = NeuralEncoderModule(
             pca_layer(self.linear_encoder_.pca_),
-            _linear_layer(mcca.coef_, mcca.intercept_, self.refiner_.device_, self.refiner_.dtype),
+            _linear_layer(mcca_coef, mcca_intercept, self.refiner_.device_, self.refiner_.dtype),
             self.refiner_.to_torch(), separate,
             refinement_input_stage=self.refinement_input_stage,
         )

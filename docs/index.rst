@@ -26,8 +26,8 @@ independently.
 The method is based on `Platonic Representations in the Human Brain:
 Unsupervised Recovery of Universal Geometry
 <https://arxiv.org/abs/2605.20496>`_. It combines feature reliability
-weighting, PCA, distilled multiset canonical correlation analysis (MCCA), and
-nonlinear residual refinement.
+weighting, PCA, cross-view ridge denoising, distilled multiset canonical
+correlation analysis (MCCA), and nonlinear residual refinement.
 
 Quick start
 -----------

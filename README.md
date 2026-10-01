@@ -33,7 +33,7 @@ pip install git+https://github.com/pablomm/neural-encoder.git
 
 ## Encoding
 
-The main class is `NeuralEncoder`, which combines feature reliability weighting, PCA, distilled multiset canonical correlation analysis (MCCA), and nonlinear residual refinement.
+The main class is `NeuralEncoder`, which combines feature reliability weighting, PCA, cross-view ridge denoising, distilled multiset canonical correlation analysis (MCCA), and nonlinear residual refinement.
 
 ### Repeated measurements
 
