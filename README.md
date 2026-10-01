@@ -12,6 +12,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/neural-encoder.svg)](https://pypi.org/project/neural-encoder/)
 [![Run Tests](https://github.com/pablomm/neural-encoder/actions/workflows/test.yml/badge.svg)](https://github.com/pablomm/neural-encoder/actions/workflows/test.yml)
 [![Documentation Status](https://readthedocs.org/projects/neural-encoder/badge/?version=latest)](https://neural-encoder.readthedocs.io/en/latest/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/pablomm/neural-encoder/blob/main/LICENSE)
 
 **neural-encoder** is a Python package for learning embeddings from repeated measurements and multiview data, designed for fMRI data or, more generally, high-dimensional noisy data. It provides linear and nonlinear encoders.
 
@@ -70,6 +71,12 @@ model = encoder.to_pytorch()
 ```
 
 See the [documentation](https://neural-encoder.readthedocs.io/) for the full API and usage guide.
+
+## License
+
+**neural-encoder** is licensed under the MIT License. See the [LICENSE](LICENSE) file for more details.
+
+
 
 ## Citation
 
