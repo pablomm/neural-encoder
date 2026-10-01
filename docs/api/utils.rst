@@ -9,10 +9,14 @@ Preprocessing and data organization
 .. autosummary::
 
    MeasurementPreprocessor
+   SessionStandardScaler
    ConfoundRemover
    split_views
 
 .. autoclass:: MeasurementPreprocessor
+   :members:
+
+.. autoclass:: SessionStandardScaler
    :members:
 
 .. autoclass:: ConfoundRemover
