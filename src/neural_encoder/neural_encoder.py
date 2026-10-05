@@ -253,10 +253,11 @@ class NeuralEncoder(TransformerMixin, BaseEstimator):
         """
         check_is_fitted(self, ["refiner_", "n_components_"])
 
+        reweighting = self.linear_encoder_.feature_reweighting_
+        weights = None if reweighting is None else reweighting.weights_
+
         def pca_layer(pca: PCA) -> nn.Linear:
-            coef, intercept = _combine_projections(
-                self.linear_encoder_.feature_reweighting_, pca, None, None, self.n_features_in_,
-            )
+            coef, intercept = _combine_projections(weights, pca, None, None, self.n_features_in_)
             return _linear_layer(coef, intercept, self.refiner_.device_, self.refiner_.dtype)
 
         # The denoiser and MCCA compose into one map from PCA scores.

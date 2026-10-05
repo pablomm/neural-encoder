@@ -14,6 +14,7 @@ from ..utils.split_views import _encode_ids, _views_by_occurrence
 from .cross_view_ridge import CrossViewRidge
 from .distilled_mcca import DistilledMCCA
 from .feature_reweighting import FeatureReweighting
+from .gram_pca import GramPCA
 
 __all__ = ["LinearEncoder"]
 
@@ -34,9 +35,11 @@ class LinearEncoder(TransformerMixin, BaseEstimator):
     ----------
     feature_reweighting : {"default", None} or FeatureReweighting, default="default"
         Feature reliability stage. The default is FeatureReweighting().
-    pca : {"default", None} or sklearn.decomposition.PCA, default="default"
+    pca : {"default", None}, sklearn.decomposition.PCA, or GramPCA, default="default"
         Dimensionality reduction. The default uses 768 components. Supports
-        PCA whitening; other dimensionality-reduction classes are not accepted.
+        PCA whitening. GramPCA computes the same PCA in feature chunks, for
+        data with many more features than samples; other
+        dimensionality-reduction classes are not accepted.
     cross_view_ridge : {"default", None} or CrossViewRidge, default="default"
         Denoising map from each measurement to the mean of its other views,
         fitted on the PCA scores (or on the preceding stage's output) and
@@ -63,7 +66,7 @@ class LinearEncoder(TransformerMixin, BaseEstimator):
     ----------
     feature_reweighting_ : FeatureReweighting or None
         Fitted feature reweighting stage.
-    pca_ : sklearn.decomposition.PCA or None
+    pca_ : sklearn.decomposition.PCA, GramPCA, or None
         Fitted PCA stage.
     cross_view_ridge_ : CrossViewRidge or None
         Fitted denoising stage.
@@ -103,7 +106,7 @@ class LinearEncoder(TransformerMixin, BaseEstimator):
         self,
         *,
         feature_reweighting: Literal["default"] | FeatureReweighting | None = "default",
-        pca: Literal["default"] | PCA | None = "default",
+        pca: Literal["default"] | PCA | GramPCA | None = "default",
         cross_view_ridge: Literal["default"] | CrossViewRidge | None = "default",
         distilled_mcca: Literal["default"] | DistilledMCCA | None = "default",
         feature_reweighting_kwargs: Mapping[str, Any] | None = None,
@@ -148,6 +151,7 @@ class LinearEncoder(TransformerMixin, BaseEstimator):
         pca = _make_stage(
             self.pca, self.pca_kwargs, PCA,
             {"n_components": 768, "random_state": self.random_state}, "pca",
+            accepted=(PCA, GramPCA),
         )
         ridge = _make_stage(
             self.cross_view_ridge, self.cross_view_ridge_kwargs,
@@ -179,7 +183,7 @@ class LinearEncoder(TransformerMixin, BaseEstimator):
         if mcca is not None:
             mcca.fit(Z, sample_ids=sample_ids, view_ids=view_ids)
         self.coef_, self.intercept_ = _combine_projections(
-            reweighting, pca, ridge, mcca, self.n_features_in_,
+            None if reweighting is None else reweighting.weights_, pca, ridge, mcca, self.n_features_in_,
         )
         self.feature_reweighting_ = reweighting
         self.pca_ = pca
@@ -266,6 +270,7 @@ class LinearEncoder(TransformerMixin, BaseEstimator):
 def _make_stage(
     specification: Any, kwargs: Mapping[str, Any] | None,
     estimator_type: type[BaseEstimator], defaults: dict[str, Any], name: str,
+    accepted: tuple[type[BaseEstimator], ...] | None = None,
 ) -> Any:
     """Resolve a stage configuration without modifying user parameters."""
     if kwargs is not None and not isinstance(kwargs, Mapping):
@@ -276,8 +281,10 @@ def _make_stage(
         raise ValueError(f"{name}_kwargs is only valid with {name}='default'.")
     if specification is None:
         return None
-    if not isinstance(specification, estimator_type):
-        raise TypeError(f"{name} must be 'default', None, or {estimator_type.__name__}.")
+    accepted = accepted or (estimator_type,)
+    if not isinstance(specification, accepted):
+        names = " or ".join(cls.__name__ for cls in accepted)
+        raise TypeError(f"{name} must be 'default', None, or {names}.")
     return clone(specification)
 
 
@@ -303,7 +310,7 @@ def _resolve_view_ids(
 
 
 def _combine_projections(
-    reweighting: FeatureReweighting | None, pca: PCA | None,
+    weights: NDArray[np.float64] | None, pca: PCA | GramPCA | None,
     ridge: CrossViewRidge | None, mcca: DistilledMCCA | None, n_features: int,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     """Compose the enabled stages into one affine map (coef, intercept).
@@ -314,11 +321,11 @@ def _combine_projections(
     """
     stages = []
     if pca is not None:
-        components = pca.components_.T.copy()
+        components = pca.components_.T
         if pca.whiten:
             scale = np.sqrt(pca.explained_variance_)
             scale = np.maximum(scale, np.finfo(scale.dtype).eps)
-            components /= scale
+            components = components / scale
         stages.append((components, None))
     if ridge is not None:
         stages.append((ridge.coef_.T, ridge.intercept_))
@@ -327,9 +334,12 @@ def _combine_projections(
     if not stages:
         projection, offset = np.eye(n_features), np.zeros(n_features)
     else:
-        projection = stages[0][0].copy()
+        # Multiply the small later stages first so that no intermediate has
+        # the input dimension times the PCA dimension.
+        tail = None
         for A, _ in stages[1:]:
-            projection = projection @ A
+            tail = A if tail is None else tail @ A
+        projection = stages[0][0].copy() if tail is None else stages[0][0] @ tail
         offset = -pca.mean_ @ projection if pca is not None else np.zeros(projection.shape[1])
         # Each stage's intercept passes through the stages that follow it.
         for i, (_, b) in enumerate(stages):
@@ -338,6 +348,6 @@ def _combine_projections(
             for A, _ in stages[i + 1:]:
                 b = b @ A
             offset = offset + b
-    if reweighting is not None:
-        projection *= reweighting.weights_[:, None]
+    if weights is not None:
+        projection *= weights[:, None]
     return projection.T, offset
