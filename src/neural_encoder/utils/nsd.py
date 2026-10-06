@@ -47,6 +47,7 @@ __all__ = [
     "get_resource",
     "get_subject_roi",
     "get_common_indexes",
+    "NSDSurfaceBetas",
 ]
 
 NSD_DATASET = os.getenv("NSD_DATASET")
@@ -525,3 +526,132 @@ def get_shared_stimuli(min_reps: int = 3) -> np.ndarray:
     )
     nsd_id = df.nsd_id.values
     return nsd_id
+
+
+MGH_HEADER_SIZE = 284
+MGH_DTYPES = {0: ">u1", 1: ">i4", 3: ">f4", 4: ">i2"}
+
+
+class NSDSurfaceBetas:
+    """Single-trial NSD surface betas, read lazily from per-session MGH files.
+
+    Behaves like a read-only array of shape (n_trials, n_vertices). Rows are
+    the trials of the loaded sessions in presentation order; columns are the
+    left-hemisphere vertices followed by the right-hemisphere vertices.
+    Indexing ``betas[rows, columns]`` reads only the requested block from
+    each session's memory-mapped files and returns a native float32 array, so
+    an instance can be passed directly as ``X`` to ``ChunkedLinearEncoder``.
+    Files are expected at
+    ``{base_dir}/{space}/subj{subject:02d}/{space}/{betas}/{hemi}.betas_session{session:02d}.mgh``.
+
+    Args:
+        subject (int): The subject ID.
+        space (str): Surface space, such as "fsaverage". Defaults to "fsaverage".
+        betas (str): Beta version folder. Defaults to "betas_fithrf_GLMdenoise_RR".
+        sessions (Optional[list[int]]): Sessions to load. Defaults to all
+            sessions found on disk.
+        base_dir (Optional[Path]): The NSD base directory. Defaults to NSD_DATASET.
+
+    Attributes:
+        sessions (np.ndarray): Session of each row.
+        trials (np.ndarray): Zero-based trial index within its session (the
+            ``session_index`` column of the stimulus index) of each row.
+        n_vertices (dict[str, int]): Number of vertices of each hemisphere.
+
+    Example:
+        >>> betas = NSDSurfaceBetas(subject=1)
+        >>> df = get_resource("stimulus").query("subject == 1 and exists")
+        >>> rows = betas.rows(df.session, df.session_index)
+        >>> block = betas[rows[:10], :4096]  # (10, 4096) float32
+    """
+
+    hemispheres = ("lh", "rh")
+
+    def __init__(
+        self,
+        subject: int,
+        space: str = "fsaverage",
+        betas: str = "betas_fithrf_GLMdenoise_RR",
+        sessions: Optional[list[int]] = None,
+        base_dir: Optional[Path] = None,
+    ) -> None:
+        self.subject = subject
+        self.folder = resolve_nsd_path(base_dir) / space / f"subj{subject:02d}" / space / betas
+        if sessions is None:
+            sessions = sorted(int(path.stem[-2:]) for path in self.folder.glob("lh.betas_session*.mgh"))
+        if not sessions:
+            raise FileNotFoundError(f"No session files found in {self.folder}")
+        self.maps = {
+            hemi: [self._memmap(self.folder / f"{hemi}.betas_session{session:02d}.mgh") for session in sessions]
+            for hemi in self.hemispheres
+        }
+        self.n_vertices = {hemi: maps[0].shape[1] for hemi, maps in self.maps.items()}
+        n_trials = [len(data) for data in self.maps["lh"]]
+        if [len(data) for data in self.maps["rh"]] != n_trials:
+            raise ValueError("Left and right hemisphere files have different numbers of trials.")
+        self.sessions = np.repeat(sessions, n_trials)
+        self.trials = np.concatenate([np.arange(n) for n in n_trials])
+        self._offsets = dict(zip(sessions, np.cumsum([0, *n_trials[:-1]])))
+        self.shape = (len(self.sessions), sum(self.n_vertices.values()))
+        self.dtype = np.dtype(np.float32)
+        self.ndim = 2
+
+    def __len__(self) -> int:
+        return self.shape[0]
+
+    def __repr__(self) -> str:
+        return f"NSDSurfaceBetas(subject={self.subject}, shape={self.shape}, folder='{self.folder}')"
+
+    def rows(self, sessions: "np.ndarray", trials: "np.ndarray") -> np.ndarray:
+        """Row positions of the given sessions and within-session trial indices."""
+        sessions, trials = np.asarray(sessions), np.asarray(trials)
+        return np.array([self._offsets[session] for session in sessions], dtype=np.intp) + trials
+
+    def __getitem__(self, key) -> np.ndarray:
+        rows, columns = key if isinstance(key, tuple) else (key, slice(None))
+        rows = np.arange(self.shape[0])[rows]
+        columns = np.arange(self.shape[1])[columns]
+        out = np.empty((np.size(rows), np.size(columns)), dtype=self.dtype)
+        flat_rows, flat_columns = np.atleast_1d(rows), np.atleast_1d(columns)
+        start = 0
+        for hemi in self.hemispheres:
+            stop = start + self.n_vertices[hemi]
+            selected = np.flatnonzero((flat_columns >= start) & (flat_columns < stop))
+            if len(selected):
+                local = flat_columns[selected] - start
+                if _is_range(local) and _is_range(selected):
+                    local = slice(local[0], local[-1] + 1)
+                    selected = slice(selected[0], selected[-1] + 1)
+                self._read(self.maps[hemi], flat_rows, local, out, selected)
+            start = stop
+        return out.reshape(np.shape(rows) + np.shape(columns))
+
+    def _read(self, maps: list, rows: np.ndarray, columns, out: np.ndarray, out_columns) -> None:
+        """Copy the given rows and hemisphere columns of each session into out."""
+        row_sessions = self.sessions[rows]
+        for session, data in zip(self._offsets, maps):
+            positions = np.flatnonzero(row_sessions == session)
+            if len(positions) == 0:
+                continue
+            trials = self.trials[rows[positions]]
+            block = data[trials, columns] if isinstance(columns, slice) else data[trials][:, columns]
+            if isinstance(out_columns, slice):
+                out[positions, out_columns] = block
+            else:
+                out[np.ix_(positions, out_columns)] = block
+
+    @staticmethod
+    def _memmap(path: Path) -> np.memmap:
+        """Map the (n_frames, n_vertices) data of an MGH surface file."""
+        if not path.exists():
+            raise FileNotFoundError(f"Beta file {path} not found")
+        _, width, height, depth, n_frames, kind = np.fromfile(path, dtype=">i4", count=6)
+        return np.memmap(
+            path, dtype=MGH_DTYPES[int(kind)], mode="r", offset=MGH_HEADER_SIZE,
+            shape=(int(n_frames), int(width * height * depth)),
+        )
+
+
+def _is_range(index: np.ndarray) -> bool:
+    """Whether a nonempty integer index is a run of consecutive increasing values."""
+    return bool(index[-1] - index[0] == len(index) - 1 and np.all(np.diff(index) == 1))

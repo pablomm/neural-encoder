@@ -253,11 +253,17 @@ def _top_eigenpairs(gram: Any, k: int, dtype: Any) -> tuple[Any, Any]:
 
 
 def _as_matrix(X: ArrayLike) -> NDArray[Any]:
-    """Return X as a 2D array without copying arrays or memory maps."""
-    X = np.asarray(X)
-    if X.ndim != 2:
+    """Return X as a 2D array without copying arrays or memory maps.
+
+    Array-like readers that define shape, dtype, len, and X[rows, columns]
+    indexing, but no __array__ conversion, are returned unchanged so that
+    they are only read one block of features at a time.
+    """
+    if hasattr(X, "__array__") or not hasattr(X, "shape"):
+        X = np.asarray(X)
+    if len(X.shape) != 2:
         raise ValueError(f"Expected a 2D array, got an array with shape {X.shape}.")
-    if X.dtype.kind not in "iuf":
+    if np.dtype(X.dtype).kind not in "iuf":
         raise ValueError("X must contain real numbers.")
     return X
 
@@ -275,8 +281,12 @@ def _load_chunk(
     """
     import torch
 
-    block = X[:, chunk_slice]
-    if block.T.flags.c_contiguous and block.size:
+    if not isinstance(X, np.ndarray):
+        # Array-like readers return the selected block as a new array.
+        block, rows = np.asarray(X[slice(None) if rows is None else rows, chunk_slice]), None
+    else:
+        block = X[:, chunk_slice]
+    if isinstance(X, np.ndarray) and block.T.flags.c_contiguous and block.size:
         # Fortran-ordered storage: copy the contiguous columns as they are,
         # then transpose and select rows on the device.
         chunk = torch.from_numpy(np.array(block.T)).to(device).T

@@ -157,6 +157,38 @@ class TestChunkedLinearEncoder(unittest.TestCase):
             assert_allclose(np.asarray(X, dtype=np.float64), values)
             del X
 
+    def test_lazy_array_like_matches_array(self):
+        class LazyArray:
+            def __init__(self, values):
+                self.values, self.shape, self.dtype, self.reads = values, values.shape, values.dtype, []
+
+            def __len__(self):
+                return self.shape[0]
+
+            def __getitem__(self, key):
+                self.reads.append(key)
+                return self.values[key].copy()
+
+        rows = np.flatnonzero(self.samples < 40)
+        test_rows = np.flatnonzero(self.samples >= 40)
+        X = LazyArray(self.X)
+        kwargs = {
+            "session_scaler": "default", "session_scaler_kwargs": {"min_samples": 10},
+            "pca_kwargs": {"n_components": 8, "chunk_size": 50},
+            "distilled_mcca_kwargs": {"n_components": 2}, "random_state": 0,
+        }
+        chunked = ChunkedLinearEncoder(**kwargs).fit(
+            X, sample_ids=self.samples[rows], sessions=self.sessions[rows], rows=rows,
+        )
+        expected = ChunkedLinearEncoder(**kwargs).fit(
+            self.X, sample_ids=self.samples[rows], sessions=self.sessions[rows], rows=rows,
+        )
+        assert_allclose(
+            chunked.transform(X, sessions=self.sessions[test_rows], rows=test_rows),
+            expected.transform(self.X, sessions=self.sessions[test_rows], rows=test_rows), atol=1e-8,
+        )
+        self.assertTrue(all(isinstance(key[1], slice) and key[1].stop - key[1].start <= 50 for key in X.reads))
+
     def test_sampled_quantiles_approximate_exact_bounds(self):
         chunked = ChunkedLinearEncoder(
             preprocessor_kwargs={"quantile_clip": 0.01},
