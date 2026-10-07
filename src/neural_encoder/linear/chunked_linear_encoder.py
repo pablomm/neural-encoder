@@ -1,5 +1,6 @@
 """Linear encoder for many features, fitted in chunks of features."""
 
+import itertools
 from collections.abc import Mapping
 from numbers import Integral
 from typing import Any, Literal, Self
@@ -13,9 +14,11 @@ from ..preprocessing.beta_preprocessor import BetaPreprocessor
 from ..preprocessing.session_standard_scaler import SessionStandardScaler
 from .cross_view_ridge import CrossViewRidge
 from .distilled_mcca import DistilledMCCA
-from .feature_reweighting import FeatureReweighting
+from .feature_reweighting import FeatureReweighting, _validate_cv
 from .gram_pca import GramPCA, _as_matrix, _load_chunk
-from .linear_encoder import _combine_projections, _make_stage, _resolve_view_ids
+from .linear_encoder import (
+    OUTPUT_REWEIGHTING_DEFAULTS, _combine_projections, _cross_validate_output, _make_stage, _resolve_view_ids,
+)
 
 __all__ = ["ChunkedLinearEncoder"]
 
@@ -38,8 +41,8 @@ class ChunkedLinearEncoder(TransformerMixin, BaseEstimator):
     quantiles, row means for sample centering, and row norms for
     normalization. With the default settings, fitting reads X three times:
     once for the clipping quantiles and twice for the Gram PCA. After PCA,
-    the cross-view ridge and distilled MCCA stages operate on the PCA
-    scores in memory, as in LinearEncoder.
+    the cross-view ridge, distilled MCCA, and output reweighting stages
+    operate on the PCA scores in memory, as in LinearEncoder.
 
     Parameters
     ----------
@@ -51,7 +54,8 @@ class ChunkedLinearEncoder(TransformerMixin, BaseEstimator):
         Beta preprocessing. Its dtype parameter is ignored; computation uses
         the dtype of the PCA stage.
     feature_reweighting : {"default", None} or FeatureReweighting, default="default"
-        Feature reliability stage. Callable weightings are not supported.
+        Feature reliability stage. Callable weightings and normalize=True are
+        not supported, because weights are computed one chunk at a time.
     pca : {"default"} or GramPCA, default="default"
         PCA stage, which cannot be disabled. The default uses 768
         components. Its chunk_size, dtype, and device apply to every pass.
@@ -59,7 +63,17 @@ class ChunkedLinearEncoder(TransformerMixin, BaseEstimator):
         Denoising map fitted on the PCA scores. None skips it.
     distilled_mcca : {"default", None} or DistilledMCCA, default="default"
         Multiview projection. The default uses 128 components.
-    session_scaler_kwargs, preprocessor_kwargs, feature_reweighting_kwargs, pca_kwargs, cross_view_ridge_kwargs, distilled_mcca_kwargs : dict or None
+    output_reweighting : {"default", None} or FeatureReweighting, default="default"
+        Scaling of each output dimension by its reliability, as in
+        LinearEncoder. The default weights each dimension by the square root
+        of its signal-to-noise ratio, normalized to unit root mean square.
+    output_reweighting_cv : int or None, default=None
+        Cross-validated reliability for the output weights, as in
+        LinearEncoder: the cross-view ridge and distilled MCCA are refitted on
+        K-1 folds of the in-memory PCA scores, so X is not read again.
+    output_reweighting_matching : {"hungarian", "index", "soft"}, default="hungarian"
+        Matching of fold dimensions to fitted dimensions, as in LinearEncoder.
+    session_scaler_kwargs, preprocessor_kwargs, feature_reweighting_kwargs, pca_kwargs, cross_view_ridge_kwargs, distilled_mcca_kwargs, output_reweighting_kwargs : dict or None
         Constructor overrides for the corresponding default stage.
     quantile_samples : int, default=10_000_000
         Number of values sampled uniformly at random to estimate clipping
@@ -69,7 +83,8 @@ class ChunkedLinearEncoder(TransformerMixin, BaseEstimator):
         Independently permute view assignments within each sample once
         before fitting, as in LinearEncoder.
     random_state : int or None, default=None
-        Nonnegative seed for view shuffling and quantile sampling.
+        Nonnegative seed for view shuffling, quantile sampling, and
+        cross-validation folds.
 
     Attributes
     ----------
@@ -85,6 +100,8 @@ class ChunkedLinearEncoder(TransformerMixin, BaseEstimator):
         Fitted denoising stage.
     distilled_mcca_ : DistilledMCCA or None
         Fitted multiview projection.
+    output_reweighting_ : FeatureReweighting or None
+        Fitted output weights.
     coef_ : ndarray of shape (n_components, n_features)
         Combined projection of the preprocessed measurements.
     intercept_ : ndarray of shape (n_components,)
@@ -124,12 +141,16 @@ class ChunkedLinearEncoder(TransformerMixin, BaseEstimator):
         pca: Literal["default"] | GramPCA = "default",
         cross_view_ridge: Literal["default"] | CrossViewRidge | None = "default",
         distilled_mcca: Literal["default"] | DistilledMCCA | None = "default",
+        output_reweighting: Literal["default"] | FeatureReweighting | None = "default",
         session_scaler_kwargs: Mapping[str, Any] | None = None,
         preprocessor_kwargs: Mapping[str, Any] | None = None,
         feature_reweighting_kwargs: Mapping[str, Any] | None = None,
         pca_kwargs: Mapping[str, Any] | None = None,
         cross_view_ridge_kwargs: Mapping[str, Any] | None = None,
         distilled_mcca_kwargs: Mapping[str, Any] | None = None,
+        output_reweighting_kwargs: Mapping[str, Any] | None = None,
+        output_reweighting_cv: int | None = None,
+        output_reweighting_matching: Literal["hungarian", "index", "soft"] = "hungarian",
         quantile_samples: int = 10_000_000,
         shuffle_views: bool = True,
         random_state: int | None = None,
@@ -140,12 +161,16 @@ class ChunkedLinearEncoder(TransformerMixin, BaseEstimator):
         self.pca = pca
         self.cross_view_ridge = cross_view_ridge
         self.distilled_mcca = distilled_mcca
+        self.output_reweighting = output_reweighting
         self.session_scaler_kwargs = session_scaler_kwargs
         self.preprocessor_kwargs = preprocessor_kwargs
         self.feature_reweighting_kwargs = feature_reweighting_kwargs
         self.pca_kwargs = pca_kwargs
         self.cross_view_ridge_kwargs = cross_view_ridge_kwargs
         self.distilled_mcca_kwargs = distilled_mcca_kwargs
+        self.output_reweighting_kwargs = output_reweighting_kwargs
+        self.output_reweighting_cv = output_reweighting_cv
+        self.output_reweighting_matching = output_reweighting_matching
         self.quantile_samples = quantile_samples
         self.shuffle_views = shuffle_views
         self.random_state = random_state
@@ -181,18 +206,28 @@ class ChunkedLinearEncoder(TransformerMixin, BaseEstimator):
         return (chunks.project(self.coef_, "preprocessed") + self.intercept_)
 
     def transform_until(
-        self, X: ArrayLike, *, stage: Literal["pca", "cross_view_ridge", "distilled_mcca"],
+        self, X: ArrayLike, *,
+        stage: Literal["pca", "cross_view_ridge", "distilled_mcca", "output_reweighting"],
         sessions: ArrayLike | None = None, rows: ArrayLike | None = None,
     ) -> NDArray[np.float64]:
-        """Transform the selected rows of X through a fitted stage, inclusive."""
+        """Transform the selected rows of X through a fitted stage, inclusive.
+
+        stage="distilled_mcca" returns the embedding before output reweighting.
+        """
         check_is_fitted(self, ["coef_", "intercept_"])
-        stages = ("pca", "cross_view_ridge", "distilled_mcca")
+        stages = ("pca", "cross_view_ridge", "distilled_mcca", "output_reweighting")
         if stage not in stages:
             raise ValueError(f"stage must be one of {stages}.")
         if getattr(self, f"{stage}_") is None:
             raise ValueError(f"The requested stage '{stage}' is disabled.")
-        if stage == "distilled_mcca":
+        if stage == "output_reweighting" or (stage == "distilled_mcca" and self.output_reweighting_ is None):
             return self.transform(X, sessions=sessions, rows=rows)
+        if stage == "distilled_mcca":
+            weights = None if self.feature_reweighting_ is None else self.feature_reweighting_.weights_
+            coef, intercept = _combine_projections(
+                weights, self.pca_, self.cross_view_ridge_, self.distilled_mcca_, self.n_features_in_,
+            )
+            return self._chunks(X, rows, sessions).project(coef, "preprocessed") + intercept
         pca = self.pca_
         Z = self._chunks(X, rows, sessions).project(pca.components_, "weighted")
         Z -= pca.mean_ @ pca.components_.T.astype(np.float64)
@@ -232,6 +267,15 @@ class ChunkedLinearEncoder(TransformerMixin, BaseEstimator):
             self.distilled_mcca, self.distilled_mcca_kwargs,
             DistilledMCCA, {"n_components": 128}, "distilled_mcca",
         )
+        output = _make_stage(
+            self.output_reweighting, self.output_reweighting_kwargs,
+            FeatureReweighting, OUTPUT_REWEIGHTING_DEFAULTS, "output_reweighting",
+        )
+        if output is not None:
+            output._validate_parameters()
+        _validate_cv(self.output_reweighting_cv, self.output_reweighting_matching)
+        if self.output_reweighting_cv is not None and output is None:
+            raise ValueError("output_reweighting_cv requires output reweighting.")
         if pca is None:
             raise ValueError("pca cannot be None.")
         pca._validate_parameters()
@@ -242,6 +286,8 @@ class ChunkedLinearEncoder(TransformerMixin, BaseEstimator):
             reweighting._validate_parameters()
             if callable(reweighting.weighting):
                 raise ValueError("Callable feature weightings are not supported.")
+            if reweighting.normalize:
+                raise ValueError("Feature reweighting with normalize=True is not supported.")
 
         X = _as_matrix(X)
         rows = _check_rows(rows, len(X))
@@ -283,17 +329,27 @@ class ChunkedLinearEncoder(TransformerMixin, BaseEstimator):
         chunks.fit_rows()
 
         Z = pca._fit_chunks(lambda chunk_slice: chunks.apply(chunk_slice, "weighted"), n_samples, n_features)
-        Z = Z.astype(np.float64)
+        Z = scores = Z.astype(np.float64)
         if ridge is not None:
             Z = ridge.fit_transform(Z, sample_ids=sample_index, view_ids=view_index)
         if mcca is not None:
             Z = mcca.fit(Z, sample_ids=sample_index, view_ids=view_index).transform(Z)
+        if output is not None:
+            output.fit(Z, sample_ids=sample_index, view_ids=view_index)
+            if self.output_reweighting_cv is not None:
+                _cross_validate_output(
+                    output, scores, Z, ridge, mcca, sample_index, view_index,
+                    self.output_reweighting_cv, self.output_reweighting_matching, self.random_state,
+                )
+            Z = output.transform(Z)
         coef, self.intercept_ = _combine_projections(
             None if reweighting is None else reweighting.weights_, pca, ridge, mcca, n_features,
+            None if output is None else output.weights_,
         )
         self.coef_ = np.ascontiguousarray(coef)
         self.cross_view_ridge_ = ridge
         self.distilled_mcca_ = mcca
+        self.output_reweighting_ = output
         self.n_components_ = self.coef_.shape[0]
         return Z
 
@@ -390,10 +446,8 @@ class _Chunks:
         if stop == 3 or self.reweighting is None:
             return x
         if self.fitting and ("weights", chunk_slice.start) not in self.done:
-            reliability = _reliability(x, self.views).cpu().numpy()
-            weights = np.maximum(reliability, 0) + self.reweighting.eps
-            if self.reweighting.weighting == "sqrt":
-                weights = np.sqrt(weights)
+            reliability = _reliability(x, self.views, self.reweighting.method).cpu().numpy()
+            weights = self.reweighting._weights(reliability)
             self.reweighting.reliability_[chunk_slice] = reliability
             self.reweighting.weights_[chunk_slice] = weights
             self.done.add(("weights", chunk_slice.start))
@@ -530,11 +584,14 @@ class _Chunks:
         return total
 
 
-def _reliability(x: Any, views: Any) -> Any:
-    """Leave-one-view-out reliability of each column, as in FeatureReweighting."""
+def _reliability(x: Any, views: Any, method: str = "correlation") -> Any:
+    """Leave-one-view-out or pairwise reliability of each column, as in FeatureReweighting."""
     import torch
 
     groups = x[views].to(torch.float64)
+    if method == "pairwise":
+        pairs = list(itertools.combinations(range(len(groups)), 2))
+        return sum(_column_correlations(groups[i], groups[j]) for i, j in pairs) / len(pairs)
     total = groups.sum(dim=0)
     reliability = torch.zeros(x.shape[1], dtype=torch.float64, device=x.device)
     for view in groups:

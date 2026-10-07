@@ -11,6 +11,8 @@ from sklearn.base import BaseEstimator, OneToOneFeatureMixin, TransformerMixin
 from sklearn.utils.validation import check_array, check_is_fitted, validate_data
 from torch import nn
 
+from ..linear.feature_reweighting import FeatureReweighting, _cross_validated_reliability, _validate_cv
+from ..linear.linear_encoder import OUTPUT_REWEIGHTING_DEFAULTS, _make_stage
 from ..utils.evaluation import evaluate_views
 from ..utils.logging import TrainingLogger
 from ..utils.split_views import split_views
@@ -62,6 +64,29 @@ class NonlinearRefiner(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
     impute : {"discard", "mean"}, default="discard"
         Missing-view handling for matrix-based fitting. fit_views requires
         complete, aligned views. Imputation introduces synthetic positives.
+    output_reweighting : {"default", None} or FeatureReweighting, default=None
+        Optional scaling of each refined output dimension by its reliability
+        across views, fitted after training on the refined training views and
+        stored as the model's ``output_scale``. "default" uses
+        FeatureReweighting(method="pairwise", weighting="sqrt_snr",
+        normalize=True), as the linear encoders. None leaves the output
+        unscaled. When the input embedding is already reliability-weighted,
+        weighting the refined output again emphasizes the most reliable
+        dimensions twice.
+    output_reweighting_kwargs : dict or None, default=None
+        Constructor overrides for the default output reweighting.
+    output_reweighting_cv : int or None, default=None
+        Estimate the reliability of the refined outputs by K-fold
+        cross-validation over samples instead of on the training outputs,
+        which are optimistic. Each fold trains a new refiner with the same
+        settings on the other folds (K extra trainings), and the reliability
+        of its outputs on the held-out fold is transferred to the fitted
+        outputs (see output_reweighting_matching) and averaged. Requires
+        output_reweighting and a default or factory network and loss, because
+        supplied modules are trained in place. None uses in-sample reliability.
+    output_reweighting_matching : {"hungarian", "index", "soft"}, default="hungarian"
+        Matching of fold outputs to fitted outputs when output_reweighting_cv
+        is set, as in LinearEncoder.
     grad_clip : float or None, default=1.0
         Maximum gradient norm, or None to disable clipping.
     device : str, default="auto"
@@ -94,6 +119,8 @@ class NonlinearRefiner(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
         completed optimizer steps.
     network_input_features_ : int
         Number of input features for the residual branch.
+    output_reweighting_ : FeatureReweighting or None
+        Fitted output weights, also stored as ``model_.output_scale``.
     separate_network_input_ : bool
         Whether fitting used separate residual branch inputs.
     device_ : torch.device
@@ -117,6 +144,10 @@ class NonlinearRefiner(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
         optimizer: Callable = torch.optim.AdamW, optimizer_kwargs: Mapping[str, Any] | None = None,
         scheduler: Callable | None = None, scheduler_kwargs: Mapping[str, Any] | None = None,
         steps: int = 2000, batch_size: int = 512, impute: Literal["discard", "mean"] = "discard",
+        output_reweighting: Literal["default"] | FeatureReweighting | None = None,
+        output_reweighting_kwargs: Mapping[str, Any] | None = None,
+        output_reweighting_cv: int | None = None,
+        output_reweighting_matching: Literal["hungarian", "index", "soft"] = "hungarian",
         grad_clip: float | None = 1.0, device: str = "auto", dtype: torch.dtype = torch.float32,
         random_state: int | None = None, eval_every: int = 200, logger: TrainingLogger | None = None,
     ) -> None:
@@ -133,6 +164,10 @@ class NonlinearRefiner(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
         self.steps = steps
         self.batch_size = batch_size
         self.impute = impute
+        self.output_reweighting = output_reweighting
+        self.output_reweighting_kwargs = output_reweighting_kwargs
+        self.output_reweighting_cv = output_reweighting_cv
+        self.output_reweighting_matching = output_reweighting_matching
         self.grad_clip = grad_clip
         self.device = device
         self.dtype = dtype
@@ -197,6 +232,21 @@ class NonlinearRefiner(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
             raise ValueError("scheduler_kwargs requires a scheduler.")
         if self.dtype not in (torch.float32, torch.float64):
             raise ValueError("dtype must be torch.float32 or torch.float64.")
+        output = _make_stage(
+            self.output_reweighting, self.output_reweighting_kwargs,
+            FeatureReweighting, OUTPUT_REWEIGHTING_DEFAULTS, "output_reweighting",
+        )
+        if output is not None:
+            output._validate_parameters()
+        _validate_cv(self.output_reweighting_cv, self.output_reweighting_matching)
+        if self.output_reweighting_cv is not None:
+            if output is None:
+                raise ValueError("output_reweighting_cv requires output_reweighting.")
+            if isinstance(self.network, nn.Module) or isinstance(self.loss, nn.Module):
+                raise ValueError(
+                    "output_reweighting_cv requires a default or factory network and loss, "
+                    "because supplied modules are trained in place."
+                )
 
     def _fit_views(
         self, views: Sequence[ArrayLike], validation_views: Sequence[ArrayLike] | None,
@@ -240,7 +290,59 @@ class NonlinearRefiner(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
         self.model_.eval()
         if isinstance(self.loss_, nn.Module):
             self.loss_.eval()
+        self._fit_output_reweighting(arrays, network_arrays)
         return self
+
+    def _fit_output_reweighting(self, arrays: Sequence[NDArray], network_arrays: Sequence[NDArray]) -> None:
+        """Learn output weights from the refined training views and store them on the model."""
+        self.output_reweighting_ = _make_stage(
+            self.output_reweighting, self.output_reweighting_kwargs,
+            FeatureReweighting, OUTPUT_REWEIGHTING_DEFAULTS, "output_reweighting",
+        )
+        if self.output_reweighting_ is None:
+            return
+        with torch.no_grad():
+            refined = [
+                self.model_(torch.tensor(X, device=self.device_, dtype=self.dtype),
+                            torch.tensor(source, device=self.device_, dtype=self.dtype)).cpu().double().numpy()
+                for X, source in zip(arrays, network_arrays)
+            ]
+        self.output_reweighting_.fit_views(refined)
+        if self.output_reweighting_cv is not None:
+            self.output_reweighting_._set_reliability(self._cross_validated_reliability(arrays, network_arrays, refined))
+        self.model_.output_scale = torch.tensor(
+            self.output_reweighting_.weights_, device=self.device_, dtype=self.dtype,
+        )
+
+    def _cross_validated_reliability(
+        self, arrays: Sequence[NDArray], network_arrays: Sequence[NDArray], refined: Sequence[NDArray],
+    ) -> NDArray[np.float64]:
+        """Reliability of the refined outputs from refiners trained on the other folds."""
+        n_samples, n_views = len(arrays[0]), len(arrays)
+        separate = network_arrays is not arrays
+        # Same settings without output reweighting, logging, or deep copies of parameters.
+        params = self.get_params(deep=False) | {
+            "output_reweighting": None, "output_reweighting_kwargs": None,
+            "output_reweighting_cv": None, "logger": None,
+        }
+
+        def fit_fold(train_rows: NDArray[np.bool_]) -> Callable[[NDArray[np.bool_]], NDArray]:
+            train = train_rows[:n_samples]
+            fold = type(self)(**params).fit_views(
+                [X[train] for X in arrays],
+                network_input=[Y[train] for Y in network_arrays] if separate else None,
+            )
+            return lambda rows: np.concatenate([
+                fold.transform(X[rows[:n_samples]], network_input=Y[rows[:n_samples]] if separate else None)
+                for X, Y in zip(arrays, network_arrays)
+            ])
+
+        return _cross_validated_reliability(
+            fit_fold, np.concatenate(refined), np.tile(np.arange(n_samples), n_views),
+            np.repeat(np.arange(n_views), n_samples), method=self.output_reweighting_.method,
+            cv=self.output_reweighting_cv, matching=self.output_reweighting_matching,
+            random_state=self.random_state,
+        )
 
     def _make_model(self) -> ResidualNetwork:
         kwargs = dict(self.network_kwargs or {})

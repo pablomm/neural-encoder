@@ -54,10 +54,10 @@ class TestChunkedLinearEncoder(unittest.TestCase):
             random_state=0, **linear_stages,
         ).fit(X, sample_ids=self.samples)
 
-        def reference_transform(X, sessions=None, stage="distilled_mcca"):
+        def reference_transform(X, sessions=None, stage=None):
             for step in steps:
                 X = step(X, sessions)
-            return reference.transform_until(X, stage=stage)
+            return reference.transform(X) if stage is None else reference.transform_until(X, stage=stage)
 
         return chunked, Z, reference, reference_transform
 
@@ -68,12 +68,14 @@ class TestChunkedLinearEncoder(unittest.TestCase):
             chunked.transform(self.test_X, sessions=test_sessions),
             reference_transform(self.test_X, test_sessions), atol=1e-8,
         )
-        for stage in ("pca", "cross_view_ridge"):
+        for stage in ("pca", "cross_view_ridge", "distilled_mcca", "output_reweighting"):
             if getattr(reference, f"{stage}_") is not None:
                 assert_allclose(
                     chunked.transform_until(self.test_X, stage=stage, sessions=test_sessions),
                     reference_transform(self.test_X, test_sessions, stage=stage), atol=1e-8,
                 )
+        if reference.output_reweighting_ is not None:
+            assert_allclose(chunked.output_reweighting_.weights_, reference.output_reweighting_.weights_, atol=1e-8)
         assert_allclose(chunked.coef_, reference.coef_, atol=1e-10)
         assert_allclose(chunked.intercept_, reference.intercept_, atol=1e-8)
 
@@ -129,6 +131,24 @@ class TestChunkedLinearEncoder(unittest.TestCase):
             preprocessor=None, feature_reweighting=None,
         )
         self.assert_equivalent(chunked, Z, reference, transform)
+
+    def test_reweighting_options(self):
+        for kwargs in ({"method": "pairwise"}, {"weighting": "snr"},
+                       {"method": "pairwise", "weighting": "sqrt_snr"}):
+            with self.subTest(feature_reweighting_kwargs=kwargs):
+                chunked, Z, reference, transform = self.fit_pair(feature_reweighting_kwargs=kwargs)
+                self.assert_equivalent(chunked, Z, reference, transform)
+                assert_allclose(chunked.feature_reweighting_.reliability_,
+                                reference.feature_reweighting_.reliability_, atol=1e-10)
+        for stages in ({"output_reweighting": None}, {"output_reweighting_kwargs": {"weighting": "snr"}},
+                       {"output_reweighting_cv": 3}, {"output_reweighting_cv": 3, "output_reweighting_matching": "soft"}):
+            with self.subTest(stages=stages):
+                chunked, Z, reference, transform = self.fit_pair(**stages)
+                self.assert_equivalent(chunked, Z, reference, transform)
+        with self.assertRaisesRegex(ValueError, "normalize"):
+            ChunkedLinearEncoder(feature_reweighting_kwargs={"normalize": True}).fit(
+                self.X, sample_ids=self.samples,
+            )
 
     def test_missing_values_are_filled(self):
         self.X[3, 5] = np.nan

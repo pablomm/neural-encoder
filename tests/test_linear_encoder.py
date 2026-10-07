@@ -24,8 +24,11 @@ class TestLinearEncoder(unittest.TestCase):
         assert_allclose(model.transform_until(self.test_X, stage="pca"), scores)
         assert_allclose(model.transform_until(self.test_X, stage="cross_view_ridge"),
                         model.cross_view_ridge_.transform(scores))
-        assert_allclose(model.transform_until(self.test_X, stage="distilled_mcca"),
+        embedding = model.distilled_mcca_.transform(model.cross_view_ridge_.transform(scores))
+        assert_allclose(model.transform_until(self.test_X, stage="distilled_mcca"), embedding, atol=1e-12)
+        assert_allclose(model.transform_until(self.test_X, stage="output_reweighting"),
                         model.transform(self.test_X), atol=1e-12)
+        assert_allclose(embedding * model.output_reweighting_.weights_, model.transform(self.test_X), atol=1e-12)
         with self.assertRaisesRegex(ValueError, "stage must be"):
             model.transform_until(self.test_X, stage="unknown")
         with self.assertRaises(ValueError):
@@ -34,10 +37,10 @@ class TestLinearEncoder(unittest.TestCase):
     def test_transform_until_skips_disabled_preceding_stages(self):
         model = LinearEncoder(
             feature_reweighting=None, pca_kwargs={"n_components": 4}, cross_view_ridge=None,
-            distilled_mcca=None,
+            distilled_mcca=None, output_reweighting=None,
         ).fit(self.X)
         assert_allclose(model.transform_until(self.test_X, stage="pca"), model.pca_.transform(self.test_X))
-        for stage in ("feature_reweighting", "cross_view_ridge", "distilled_mcca"):
+        for stage in ("feature_reweighting", "cross_view_ridge", "distilled_mcca", "output_reweighting"):
             with self.assertRaisesRegex(ValueError, "disabled"):
                 model.transform_until(self.test_X, stage=stage)
 
@@ -93,28 +96,105 @@ class TestLinearEncoder(unittest.TestCase):
         self.test_X = rng.normal(size=(7, 6))
 
     def test_combined_projection_matches_all_stage_combinations(self):
-        for weighted, reduced, denoised, distilled in itertools.product((False, True), repeat=4):
+        for weighted, reduced, denoised, distilled, output in itertools.product((False, True), repeat=5):
             for whiten in (False, True) if reduced else (False,):
                 with self.subTest(weighted=weighted, reduced=reduced, denoised=denoised,
-                                  distilled=distilled, whiten=whiten):
+                                  distilled=distilled, output=output, whiten=whiten):
                     model = LinearEncoder(
                         feature_reweighting=FeatureReweighting(weighting="sqrt") if weighted else None,
                         pca=PCA(n_components=4, whiten=whiten) if reduced else None,
                         cross_view_ridge=CrossViewRidge(alphas=[0.5]) if denoised else None,
                         distilled_mcca=DistilledMCCA(n_components=2) if distilled else None,
+                        output_reweighting="default" if output else None,
                     )
                     original = self.X.copy()
                     model.fit(self.X, sample_ids=self.samples)
                     for X in (self.X, self.test_X):
                         sequential = X
                         stages = (model.feature_reweighting_, model.pca_, model.cross_view_ridge_,
-                                  model.distilled_mcca_)
+                                  model.distilled_mcca_, model.output_reweighting_)
                         for stage in stages:
                             if stage is not None:
                                 sequential = stage.transform(sequential)
                         assert_allclose(model.transform(X), sequential, atol=1e-10)
                     assert_array_equal(self.X, original)
                     self.assertEqual(model.coef_.shape, (model.n_components_, 6))
+
+    def test_output_reweighting_stage(self):
+        params = dict(pca_kwargs={"n_components": 4}, distilled_mcca_kwargs={"n_components": 3},
+                      shuffle_views=False)
+        model = LinearEncoder(**params).fit(self.X, sample_ids=self.samples, view_ids=self.views)
+        output = model.output_reweighting_
+        self.assertIsInstance(output, FeatureReweighting)
+        self.assertEqual((output.method, output.weighting, output.normalize), ("pairwise", "sqrt_snr", True))
+        embedding = model.transform_until(self.X, stage="distilled_mcca")
+        expected = FeatureReweighting(method="pairwise", weighting="sqrt_snr", normalize=True).fit(
+            embedding, sample_ids=self.samples, view_ids=self.views,
+        )
+        assert_allclose(output.weights_, expected.weights_, atol=1e-12)
+        self.assertAlmostEqual(float(np.sqrt(np.mean(output.weights_ ** 2))), 1.0)
+        assert_allclose(model.transform(self.test_X),
+                        model.transform_until(self.test_X, stage="distilled_mcca") * output.weights_, atol=1e-12)
+        unweighted = LinearEncoder(**params, output_reweighting=None).fit(
+            self.X, sample_ids=self.samples, view_ids=self.views,
+        )
+        self.assertIsNone(unweighted.output_reweighting_)
+        assert_allclose(unweighted.transform(self.test_X),
+                        model.transform_until(self.test_X, stage="distilled_mcca"), atol=1e-12)
+        linear = LinearEncoder(**params, output_reweighting_kwargs={"weighting": "snr"}).fit(
+            self.X, sample_ids=self.samples, view_ids=self.views,
+        )
+        self.assertEqual(linear.output_reweighting_.weighting, "snr")
+        self.assertEqual(linear.output_reweighting_.method, "pairwise")
+        assert_allclose(linear.output_reweighting_.reliability_, output.reliability_)
+
+    def test_cross_validated_output_reliability(self):
+        rng = np.random.default_rng(21)
+        signal = rng.normal(size=(60, 3)) @ rng.normal(size=(3, 20))
+        X = np.concatenate([signal + rng.normal(scale=2.0, size=signal.shape) for _ in range(3)])
+        samples, views = np.tile(np.arange(60), 3), np.repeat(np.arange(3), 60)
+        params = dict(pca_kwargs={"n_components": 12}, distilled_mcca_kwargs={"n_components": 8},
+                      shuffle_views=False, random_state=3)
+        in_sample = LinearEncoder(**params).fit(X, sample_ids=samples, view_ids=views)
+        model = LinearEncoder(**params, output_reweighting_cv=3, output_reweighting_matching="index").fit(
+            X, sample_ids=samples, view_ids=views,
+        )
+        # Only the output weights change; they stay folded into the projection.
+        assert_allclose(model.distilled_mcca_.coef_, in_sample.distilled_mcca_.coef_)
+        reliability = model.output_reweighting_.reliability_
+        assert_allclose(model.output_reweighting_.weights_, model.output_reweighting_._weights(reliability))
+        assert_allclose(model.transform(self.test_X.repeat(4, axis=1)[:, :20]),
+                        model.transform_until(self.test_X.repeat(4, axis=1)[:, :20], stage="distilled_mcca")
+                        * model.output_reweighting_.weights_, atol=1e-12)
+        # Out-of-sample reliability is lower than the optimistic in-sample estimate.
+        self.assertLess(reliability.mean(), in_sample.output_reweighting_.reliability_.mean())
+        # Manual procedure: PCA fixed, ridge and MCCA refitted on the other folds.
+        scores = model.transform_until(X, stage="pca")
+        folds = np.array_split(np.random.default_rng(3).permutation(np.arange(60)), 3)
+        expected = np.zeros(8)
+        for fold in folds:
+            test = np.isin(samples, fold)
+            ridge = CrossViewRidge().fit(scores[~test], sample_ids=samples[~test], view_ids=views[~test])
+            mcca = DistilledMCCA(n_components=8).fit(
+                ridge.transform(scores[~test]), sample_ids=samples[~test], view_ids=views[~test],
+            )
+            expected += FeatureReweighting(method="pairwise").fit(
+                mcca.transform(ridge.transform(scores[test])), sample_ids=samples[test], view_ids=views[test],
+            ).reliability_ / 3
+        assert_allclose(reliability, expected, atol=1e-10)
+        for matching in ("hungarian", "soft"):
+            with self.subTest(matching=matching):
+                other = LinearEncoder(**params, output_reweighting_cv=3, output_reweighting_matching=matching)
+                other.fit(X, sample_ids=samples, view_ids=views)
+                self.assertTrue(np.all(np.isfinite(other.output_reweighting_.weights_)))
+                repeated = clone(other).fit(X, sample_ids=samples, view_ids=views)
+                assert_allclose(repeated.output_reweighting_.weights_, other.output_reweighting_.weights_)
+        self.assertEqual(LinearEncoder().output_reweighting_matching, "hungarian")
+        self.assertIsNone(LinearEncoder().output_reweighting_cv)
+        for kwargs in ({"output_reweighting_cv": 1}, {"output_reweighting_matching": "other"},
+                       {"output_reweighting_cv": 3, "output_reweighting": None}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                LinearEncoder(**params | kwargs).fit(X, sample_ids=samples, view_ids=views)
 
     def test_cross_view_ridge_stage(self):
         params = dict(pca_kwargs={"n_components": 4}, distilled_mcca_kwargs={"n_components": 2}, shuffle_views=False)
@@ -186,7 +266,8 @@ class TestLinearEncoder(unittest.TestCase):
         self.assertEqual(inferred.cross_view_ridge_.n_pairs_, 89)
 
     def test_disabled_stages_without_ids_and_refit(self):
-        model = LinearEncoder(feature_reweighting=None, pca=None, cross_view_ridge=None, distilled_mcca=None)
+        model = LinearEncoder(feature_reweighting=None, pca=None, cross_view_ridge=None, distilled_mcca=None,
+                              output_reweighting=None)
         assert_allclose(model.fit_transform(self.X), self.X)
         model.set_params(pca=PCA(n_components=3)).fit(self.X)
         self.assertEqual(model.transform(self.X).shape, (90, 3))
@@ -209,6 +290,8 @@ class TestLinearEncoder(unittest.TestCase):
             {"cross_view_ridge": CrossViewRidge(), "cross_view_ridge_kwargs": {"fit_intercept": False}},
             {"cross_view_ridge": "other"}, {"cross_view_ridge_kwargs": {"alphas": [-1.0]}},
             {"random_state": -1}, {"shuffle_views": "yes"},
+            {"output_reweighting": None, "output_reweighting_kwargs": {}},
+            {"output_reweighting": "other"}, {"output_reweighting_kwargs": {"weighting": "cube"}},
         ):
             with self.subTest(kwargs=kwargs), self.assertRaises((ValueError, TypeError)):
                 LinearEncoder(**kwargs).fit(self.X, sample_ids=self.samples)

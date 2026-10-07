@@ -7,7 +7,7 @@ __all__ = ["ResidualNetwork", "ResidualMLP"]
 
 
 class ResidualNetwork(nn.Module):
-    """Wrap a residual branch as f(z, y) = z + alpha * network(y).
+    """Wrap a residual branch as f(z, y) = s * (z + alpha * network(y)).
 
     Parameters
     ----------
@@ -17,11 +17,16 @@ class ResidualNetwork(nn.Module):
         Initial residual multiplier.
     trainable_alpha : bool, default=True
         Whether to optimize alpha. Otherwise it is a registered buffer.
+    output_scale : torch.Tensor or None, default=None
+        Optional per-feature multiplier s applied to the output, stored as
+        the buffer ``output_scale``. None leaves the output unscaled (s = 1).
+        NonlinearRefiner sets it after training when output reweighting is
+        enabled; pass a tensor of the right shape to load such a state dict.
     """
 
     def __init__(
         self, network: nn.Module, *, initial_alpha: float = 0.25,
-        trainable_alpha: bool = True,
+        trainable_alpha: bool = True, output_scale: torch.Tensor | None = None,
     ) -> None:
         super().__init__()
         self.network = network
@@ -30,13 +35,15 @@ class ResidualNetwork(nn.Module):
             self.alpha = nn.Parameter(alpha)
         else:
             self.register_buffer("alpha", alpha)
+        self.register_buffer("output_scale", None if output_scale is None else torch.as_tensor(output_scale))
 
     def forward(self, x: torch.Tensor, network_input: torch.Tensor | None = None) -> torch.Tensor:
         """Refine x using network_input, or x itself when omitted."""
         residual = self.forward_residual(x if network_input is None else network_input)
         if residual.shape != x.shape:
             raise ValueError("The residual output must match the base representation shape.")
-        return x + self.alpha * residual
+        output = x + self.alpha * residual
+        return output if self.output_scale is None else output * self.output_scale
 
     def forward_residual(self, x: torch.Tensor) -> torch.Tensor:
         """Return the residual branch output before alpha scaling."""
@@ -57,7 +64,7 @@ class ResidualMLP(ResidualNetwork):
     def __init__(
         self, n_features: int, *, network_input_features: int | None = None, hidden_dim: int = 768, depth: int = 1,
         dropout: float = 0.1, initial_alpha: float = 0.25,
-        trainable_alpha: bool = True,
+        trainable_alpha: bool = True, output_scale: torch.Tensor | None = None,
     ) -> None:
         if n_features < 1 or hidden_dim < 1 or depth < 1:
             raise ValueError("n_features, hidden_dim, and depth must be positive.")
@@ -75,4 +82,5 @@ class ResidualMLP(ResidualNetwork):
                 nn.init.orthogonal_(layer.weight)
                 nn.init.zeros_(layer.bias)
         nn.init.zeros_(network[-1].weight)
-        super().__init__(network, initial_alpha=initial_alpha, trainable_alpha=trainable_alpha)
+        super().__init__(network, initial_alpha=initial_alpha, trainable_alpha=trainable_alpha,
+                         output_scale=output_scale)

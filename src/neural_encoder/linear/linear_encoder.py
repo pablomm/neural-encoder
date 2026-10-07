@@ -1,4 +1,4 @@
-"""Compose feature reweighting, PCA, cross-view ridge, and distilled MCCA."""
+"""Compose feature reweighting, PCA, cross-view ridge, distilled MCCA, and output reweighting."""
 
 from collections.abc import Mapping
 from numbers import Integral
@@ -13,10 +13,14 @@ from sklearn.utils.validation import check_is_fitted, validate_data
 from ..utils.split_views import _encode_ids, _views_by_occurrence
 from .cross_view_ridge import CrossViewRidge
 from .distilled_mcca import DistilledMCCA
-from .feature_reweighting import FeatureReweighting
+from .feature_reweighting import FeatureReweighting, _cross_validated_reliability, _validate_cv
 from .gram_pca import GramPCA
 
 __all__ = ["LinearEncoder"]
+
+# The default output stage weights each embedding dimension by the square
+# root of its single-measurement signal-to-noise ratio.
+OUTPUT_REWEIGHTING_DEFAULTS = {"method": "pairwise", "weighting": "sqrt_snr", "normalize": True}
 
 if TYPE_CHECKING:
     import torch
@@ -25,11 +29,11 @@ if TYPE_CHECKING:
 class LinearEncoder(TransformerMixin, BaseEstimator):
     """Learn an affine encoder from repeated or multiview measurements.
 
-    Fits feature reweighting, PCA, cross-view ridge denoising, and distilled
-    MCCA in that order. Each stage can use its default estimator, a supplied
-    estimator to clone, or None to skip the stage. All stages are affine, so
-    the fitted encoder is a single projection. Preprocessing is performed
-    outside this encoder.
+    Fits feature reweighting, PCA, cross-view ridge denoising, distilled
+    MCCA, and output reweighting in that order. Each stage can use its
+    default estimator, a supplied estimator to clone, or None to skip the
+    stage. All stages are affine, so the fitted encoder is a single
+    projection. Preprocessing is performed outside this encoder.
 
     Parameters
     ----------
@@ -47,7 +51,31 @@ class LinearEncoder(TransformerMixin, BaseEstimator):
         scores as in the original architecture.
     distilled_mcca : {"default", None} or DistilledMCCA, default="default"
         Multiview projection. The default uses 128 components.
-    feature_reweighting_kwargs, pca_kwargs, cross_view_ridge_kwargs, distilled_mcca_kwargs : dict or None
+    output_reweighting : {"default", None} or FeatureReweighting, default="default"
+        Scaling of each output dimension by its reliability across views,
+        fitted on the training embeddings. The default is
+        FeatureReweighting(method="pairwise", weighting="sqrt_snr",
+        normalize=True): each dimension is multiplied by the square root of
+        its signal-to-noise ratio, so unreliable MCCA dimensions contribute
+        little to cosine similarities, rescaled to preserve the overall
+        scale. None returns the unweighted embedding.
+    output_reweighting_cv : int or None, default=None
+        Estimate the reliability used by the output weights by K-fold
+        cross-validation over samples instead of on the training embeddings,
+        whose reliability is optimistic for the least reliable dimensions
+        because the encoder was fitted to them. The stages up to PCA stay
+        fitted on all samples; the cross-view ridge and distilled MCCA are
+        refitted on K-1 folds, and the reliability of their outputs on the
+        held-out fold is transferred to the fitted dimensions (see
+        output_reweighting_matching) and averaged over folds. This costs K
+        extra ridge and MCCA fits. None uses in-sample reliability.
+    output_reweighting_matching : {"hungarian", "index", "soft"}, default="hungarian"
+        How fold dimensions are matched to the fitted dimensions when
+        output_reweighting_cv is set: "hungarian" pairs them one to one by
+        maximal absolute correlation on the held-out samples, "index" by
+        position, and "soft" averages fold reliabilities weighted by squared
+        correlations.
+    feature_reweighting_kwargs, pca_kwargs, cross_view_ridge_kwargs, distilled_mcca_kwargs, output_reweighting_kwargs : dict or None
         Constructor overrides for the corresponding default stage. Supplying
         kwargs with an explicit estimator or disabled stage raises an error.
         Component counts must be valid for the data; they are not reduced
@@ -58,8 +86,8 @@ class LinearEncoder(TransformerMixin, BaseEstimator):
         remain in their original row order, and no measurements are imputed
         by this operation.
     random_state : int or None, default=None
-        Nonnegative seed for view shuffling and the default PCA, unless its
-        random_state is overridden in pca_kwargs. Explicit estimator instances
+        Nonnegative seed for view shuffling, cross-validation folds, and the
+        default PCA, unless its random_state is overridden in pca_kwargs. Explicit estimator instances
         retain their own random-state configuration.
 
     Attributes
@@ -72,11 +100,14 @@ class LinearEncoder(TransformerMixin, BaseEstimator):
         Fitted denoising stage.
     distilled_mcca_ : DistilledMCCA or None
         Fitted distilled MCCA stage.
+    output_reweighting_ : FeatureReweighting or None
+        Fitted output reweighting stage. Its ``reliability_`` is cross-validated
+        when output_reweighting_cv is set.
     coef_ : ndarray of shape (n_components, n_features)
         Combined coefficients. Transform computes ``X @ coef_.T + intercept_``.
     intercept_ : ndarray of shape (n_components,)
-        Combined offset, accounting for PCA centering, denoising, and MCCA
-        distillation.
+        Combined offset, accounting for PCA centering, denoising, MCCA
+        distillation, and output weights.
     n_features_in_ : int
         Number of input features.
     n_components_ : int
@@ -86,7 +117,10 @@ class LinearEncoder(TransformerMixin, BaseEstimator):
     -----
     Reliability uses complete samples; PCA uses all training measurements;
     the cross-view ridge uses samples with at least two views; MCCA handles
-    missing views according to its impute parameter. PCA is
+    missing views according to its impute parameter. Output reliability is
+    estimated in-sample on the training embeddings unless
+    output_reweighting_cv is set; the in-sample estimate is optimistic for
+    the least reliable dimensions. PCA is
     unweighted across samples. Corresponding features are required across
     views. With no dimensionality reduction, the combined coefficient matrix
     can be as large as n_features by n_features.
@@ -109,10 +143,14 @@ class LinearEncoder(TransformerMixin, BaseEstimator):
         pca: Literal["default"] | PCA | GramPCA | None = "default",
         cross_view_ridge: Literal["default"] | CrossViewRidge | None = "default",
         distilled_mcca: Literal["default"] | DistilledMCCA | None = "default",
+        output_reweighting: Literal["default"] | FeatureReweighting | None = "default",
         feature_reweighting_kwargs: Mapping[str, Any] | None = None,
         pca_kwargs: Mapping[str, Any] | None = None,
         cross_view_ridge_kwargs: Mapping[str, Any] | None = None,
         distilled_mcca_kwargs: Mapping[str, Any] | None = None,
+        output_reweighting_kwargs: Mapping[str, Any] | None = None,
+        output_reweighting_cv: int | None = None,
+        output_reweighting_matching: Literal["hungarian", "index", "soft"] = "hungarian",
         shuffle_views: bool = True,
         random_state: int | None = None,
     ) -> None:
@@ -120,10 +158,14 @@ class LinearEncoder(TransformerMixin, BaseEstimator):
         self.pca = pca
         self.cross_view_ridge = cross_view_ridge
         self.distilled_mcca = distilled_mcca
+        self.output_reweighting = output_reweighting
         self.feature_reweighting_kwargs = feature_reweighting_kwargs
         self.pca_kwargs = pca_kwargs
         self.cross_view_ridge_kwargs = cross_view_ridge_kwargs
         self.distilled_mcca_kwargs = distilled_mcca_kwargs
+        self.output_reweighting_kwargs = output_reweighting_kwargs
+        self.output_reweighting_cv = output_reweighting_cv
+        self.output_reweighting_matching = output_reweighting_matching
         self.shuffle_views = shuffle_views
         self.random_state = random_state
 
@@ -161,8 +203,15 @@ class LinearEncoder(TransformerMixin, BaseEstimator):
             self.distilled_mcca, self.distilled_mcca_kwargs,
             DistilledMCCA, {"n_components": 128}, "distilled_mcca",
         )
+        output = _make_stage(
+            self.output_reweighting, self.output_reweighting_kwargs,
+            FeatureReweighting, OUTPUT_REWEIGHTING_DEFAULTS, "output_reweighting",
+        )
+        _validate_cv(self.output_reweighting_cv, self.output_reweighting_matching)
+        if self.output_reweighting_cv is not None and output is None:
+            raise ValueError("output_reweighting_cv requires output reweighting.")
         X = validate_data(self, X, dtype=np.float64, ensure_min_samples=2)
-        if reweighting is not None or ridge is not None or mcca is not None:
+        if any(stage is not None for stage in (reweighting, ridge, mcca, output)):
             if sample_ids is None:
                 raise ValueError("sample_ids is required for multiview stages.")
         if view_ids is not None and sample_ids is None:
@@ -178,17 +227,27 @@ class LinearEncoder(TransformerMixin, BaseEstimator):
             # Use transform explicitly so fitting downstream stages follows
             # exactly the same whitening convention as inference.
             Z = pca.fit(Z).transform(Z)
+        scores = Z
         if ridge is not None:
             Z = ridge.fit_transform(Z, sample_ids=sample_ids, view_ids=view_ids)
         if mcca is not None:
-            mcca.fit(Z, sample_ids=sample_ids, view_ids=view_ids)
+            Z = mcca.fit(Z, sample_ids=sample_ids, view_ids=view_ids).transform(Z)
+        if output is not None:
+            output.fit(Z, sample_ids=sample_ids, view_ids=view_ids)
+            if self.output_reweighting_cv is not None:
+                _cross_validate_output(
+                    output, scores, Z, ridge, mcca, sample_ids, view_ids,
+                    self.output_reweighting_cv, self.output_reweighting_matching, self.random_state,
+                )
         self.coef_, self.intercept_ = _combine_projections(
             None if reweighting is None else reweighting.weights_, pca, ridge, mcca, self.n_features_in_,
+            None if output is None else output.weights_,
         )
         self.feature_reweighting_ = reweighting
         self.pca_ = pca
         self.cross_view_ridge_ = ridge
         self.distilled_mcca_ = mcca
+        self.output_reweighting_ = output
         self.n_components_ = self.coef_.shape[0]
         return self
 
@@ -237,17 +296,18 @@ class LinearEncoder(TransformerMixin, BaseEstimator):
 
     def transform_until(
         self, X: ArrayLike, *,
-        stage: Literal["feature_reweighting", "pca", "cross_view_ridge", "distilled_mcca"],
+        stage: Literal["feature_reweighting", "pca", "cross_view_ridge", "distilled_mcca", "output_reweighting"],
     ) -> NDArray[Any]:
         """Transform measurements through the selected fitted stage, inclusive.
 
         For example, stage="pca" returns PCA scores after feature reweighting,
-        and stage="cross_view_ridge" returns the denoised PCA scores.
-        Disabled preceding stages are skipped; a disabled target raises an
-        error. No sample or view IDs are required.
+        stage="cross_view_ridge" returns the denoised PCA scores, and
+        stage="distilled_mcca" returns the embedding before output
+        reweighting. Disabled preceding stages are skipped; a disabled target
+        raises an error. No sample or view IDs are required.
         """
         check_is_fitted(self, ["coef_", "intercept_"])
-        stages = ("feature_reweighting", "pca", "cross_view_ridge", "distilled_mcca")
+        stages = ("feature_reweighting", "pca", "cross_view_ridge", "distilled_mcca", "output_reweighting")
         if stage not in stages:
             raise ValueError(f"stage must be one of {stages}.")
         if getattr(self, f"{stage}_") is None:
@@ -288,6 +348,30 @@ def _make_stage(
     return clone(specification)
 
 
+def _cross_validate_output(
+    output: FeatureReweighting, scores: NDArray[Any], embedding: NDArray[Any],
+    ridge: CrossViewRidge | None, mcca: DistilledMCCA | None,
+    sample_ids: NDArray[np.intp], view_ids: NDArray[np.intp],
+    cv: int, matching: str, random_state: int | None,
+) -> None:
+    """Replace the output reliability by a cross-validated estimate.
+
+    scores are the training inputs of the cross-view ridge (PCA scores), and
+    embedding the fitted outputs before reweighting. For each fold, the ridge
+    and MCCA are refitted on the other folds.
+    """
+    def fit_fold(train: NDArray[np.bool_]) -> Any:
+        ids = {"sample_ids": sample_ids[train], "view_ids": view_ids[train]}
+        denoised = scores if ridge is None else clone(ridge).fit(scores[train], **ids).transform(scores)
+        fold_mcca = None if mcca is None else clone(mcca).fit(denoised[train], **ids)
+        return lambda rows: denoised[rows] if fold_mcca is None else fold_mcca.transform(denoised[rows])
+
+    output._set_reliability(_cross_validated_reliability(
+        fit_fold, embedding, sample_ids, view_ids,
+        method=output.method, cv=cv, matching=matching, random_state=random_state,
+    ))
+
+
 def _resolve_view_ids(
     sample_ids: ArrayLike, view_ids: ArrayLike | None, n_samples: int,
     shuffle: bool, seed: int | None,
@@ -312,12 +396,14 @@ def _resolve_view_ids(
 def _combine_projections(
     weights: NDArray[np.float64] | None, pca: PCA | GramPCA | None,
     ridge: CrossViewRidge | None, mcca: DistilledMCCA | None, n_features: int,
+    output_weights: NDArray[np.float64] | None = None,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     """Compose the enabled stages into one affine map (coef, intercept).
 
     Stages after reweighting are x @ A + b maps, composed in order; the PCA
-    offset is -mean @ projection. Reweighting is applied last as a row
-    scaling, avoiding a full input-space diagonal weight matrix.
+    offset is -mean @ projection. Input reweighting is applied last as a row
+    scaling, avoiding a full input-space diagonal weight matrix; output
+    weights scale the columns and the offset.
     """
     stages = []
     if pca is not None:
@@ -350,4 +436,7 @@ def _combine_projections(
             offset = offset + b
     if weights is not None:
         projection *= weights[:, None]
+    if output_weights is not None:
+        projection = projection * output_weights
+        offset = offset * output_weights
     return projection.T, offset

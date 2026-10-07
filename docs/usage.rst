@@ -76,6 +76,23 @@ configure each internal estimator without replacing it:
        random_state=0,
    )
 
+The MCCA output dimensions are weighted by the square root of their
+signal-to-noise ratio across views. ``output_reweighting_kwargs`` changes the
+rule, for example ``{"weighting": "snr"}``, and ``output_reweighting=False``
+disables it:
+
+.. code-block:: python
+
+   encoder = NeuralEncoder(output_reweighting=False, random_state=0)
+
+The reliabilities behind the weights can be estimated by cross-validation
+instead of on the training embeddings, which overstates the reliability of
+the last dimensions:
+
+.. code-block:: python
+
+   encoder = NeuralEncoder(output_reweighting_cv=5, random_state=0)
+
 The PCA scores are denoised by ``CrossViewRidge`` before MCCA. Pass
 ``cross_view_ridge=False`` to skip this stage and fit MCCA directly on the PCA
 scores, as in the paper architecture:
@@ -148,6 +165,7 @@ requires direct access to intermediate representations:
    Z_linear = linear.transform(X_train)
    Z_pca = linear.transform_until(X_train, stage="pca")
    Z_denoised = linear.transform_until(X_train, stage="cross_view_ridge")
+   Z_unweighted = linear.transform_until(X_train, stage="distilled_mcca")
 
    refiner = NonlinearRefiner().fit(
        Z_linear,

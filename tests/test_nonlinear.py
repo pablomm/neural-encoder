@@ -234,6 +234,71 @@ class TestNonlinear(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "number of rows"):
             model.transform(self.views[0], network_input=self.views[0][:-1])
 
+    def test_output_reweighting(self):
+        from neural_encoder.linear import FeatureReweighting
+
+        plain = self.make_refiner().fit_views(self.views)
+        self.assertIsNone(plain.output_reweighting_)
+        self.assertIsNone(plain.model_.output_scale)
+        weighted = self.make_refiner(output_reweighting="default").fit_views(self.views)
+        output = weighted.output_reweighting_
+        self.assertEqual((output.method, output.weighting, output.normalize), ("pairwise", "sqrt_snr", True))
+        # Training is unaffected; weights come from the refined training views.
+        refined = [plain.transform(view) for view in self.views]
+        assert_allclose(weighted.transform(self.views[0]), refined[0] * output.weights_, rtol=1e-5, atol=1e-6)
+        expected = FeatureReweighting(method="pairwise", weighting="sqrt_snr", normalize=True).fit_views(
+            [view.astype(np.float64) for view in refined],
+        )
+        assert_allclose(output.weights_, expected.weights_, rtol=1e-4)
+        module = weighted.to_torch()
+        self.assertIs(module, weighted.model_)
+        assert_allclose(module.output_scale.cpu().numpy(), output.weights_, rtol=1e-6)
+        with torch.no_grad():
+            torch_output = module(torch.tensor(self.views[0])).numpy()
+        assert_allclose(torch_output, weighted.transform(self.views[0]), rtol=1e-6)
+        # The scale is a buffer and travels with the state dict.
+        state = module.state_dict()
+        self.assertIn("output_scale", state)
+        restored = ResidualMLP(4, hidden_dim=12, output_scale=torch.ones(4))
+        restored.load_state_dict(state)
+        restored.eval()
+        with torch.no_grad():
+            assert_allclose(restored(torch.tensor(self.views[0])).numpy(), torch_output, rtol=1e-6)
+        snr = self.make_refiner(output_reweighting_kwargs=None, output_reweighting=FeatureReweighting(
+            method="pairwise", weighting="snr")).fit_views(self.views)
+        self.assertEqual(snr.output_reweighting_.weighting, "snr")
+        # Refitting without reweighting resets the scale.
+        weighted.set_params(output_reweighting=None).fit_views(self.views)
+        self.assertIsNone(weighted.model_.output_scale)
+        for kwargs in ({"output_reweighting": "other"}, {"output_reweighting_kwargs": {"weighting": "cube"}},
+                       {"output_reweighting": None, "output_reweighting_kwargs": {}}):
+            with self.subTest(kwargs=kwargs), self.assertRaises((ValueError, TypeError)):
+                self.make_refiner(**kwargs).fit_views(self.views)
+
+    def test_cross_validated_output_reweighting(self):
+        rng = np.random.default_rng(8)
+        signal = rng.normal(size=(30, 4)).astype(np.float32)
+        views = [signal + rng.normal(scale=0.5, size=signal.shape).astype(np.float32) for _ in range(3)]
+        in_sample = self.make_refiner(output_reweighting="default").fit_views(views)
+        model = self.make_refiner(output_reweighting="default", output_reweighting_cv=3).fit_views(views)
+        # The full refiner is trained exactly as without cross-validation.
+        assert_allclose(model.model_.network[0].weight.detach().numpy(),
+                        in_sample.model_.network[0].weight.detach().numpy())
+        reliability = model.output_reweighting_.reliability_
+        self.assertFalse(np.allclose(reliability, in_sample.output_reweighting_.reliability_))
+        assert_allclose(model.model_.output_scale.numpy(), model.output_reweighting_.weights_, rtol=1e-6)
+        repeated = self.make_refiner(output_reweighting="default", output_reweighting_cv=3).fit_views(views)
+        assert_allclose(repeated.output_reweighting_.reliability_, reliability, rtol=1e-6)
+        separate = self.make_refiner(output_reweighting="default", output_reweighting_cv=3).fit_views(
+            views, network_input=[np.hstack([view, view]) for view in views],
+        )
+        self.assertEqual(separate.output_reweighting_.reliability_.shape, (4,))
+        with self.assertRaisesRegex(ValueError, "requires output_reweighting"):
+            self.make_refiner(output_reweighting_cv=3).fit_views(views)
+        with self.assertRaisesRegex(ValueError, "trained in place"):
+            self.make_refiner(output_reweighting="default", output_reweighting_cv=3,
+                              network=nn.Linear(4, 4), network_kwargs=None).fit_views(views)
+
     def test_validation_errors(self):
         with self.assertRaises(NotFittedError):
             self.make_refiner().transform(self.views[0])

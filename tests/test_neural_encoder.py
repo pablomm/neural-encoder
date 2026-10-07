@@ -122,7 +122,7 @@ class TestNeuralEncoder(unittest.TestCase):
                         assert_allclose(source, linear.transform_until(self.test_X, stage="pca"), atol=1e-10)
                     result = model.to_pytorch()(torch.tensor(self.test_X))
                     assert_allclose(result.detach(), model.transform(self.test_X), atol=1e-10)
-        # Without the denoiser, the linear stage is reweighting, PCA, and MCCA.
+        # Without the denoiser, the linear stage is reweighting, PCA, MCCA, and output reweighting.
         skipped = self.make_encoder(cross_view_ridge=False).fit(self.X, sample_ids=self.ids)
         original = LinearEncoder(
             pca_kwargs={"n_components": 4}, cross_view_ridge=None,
@@ -134,6 +134,41 @@ class TestNeuralEncoder(unittest.TestCase):
             self.make_encoder(cross_view_ridge="yes").fit(self.X, sample_ids=self.ids)
         with self.assertRaisesRegex(ValueError, "requires cross_view_ridge=True"):
             self.make_encoder(cross_view_ridge=False, cross_view_ridge_kwargs={}).fit(self.X, sample_ids=self.ids)
+
+    def test_output_reweighting_flag_and_refiner_output_scale(self):
+        default = self.make_encoder().fit(self.X, sample_ids=self.ids)
+        self.assertTrue(default.output_reweighting)
+        weights = default.linear_encoder_.output_reweighting_.weights_
+        for stage in ("distilled_mcca", "pca"):
+            with self.subTest(stage=stage):
+                plain = self.make_encoder(output_reweighting=False, refinement_input_stage=stage)
+                plain.fit(self.X, sample_ids=self.ids)
+                self.assertIsNone(plain.linear_encoder_.output_reweighting_)
+                weighted = self.make_encoder(refinement_input_stage=stage).fit(self.X, sample_ids=self.ids)
+                embedding, _ = weighted._representations(self.test_X)
+                assert_allclose(embedding, plain._representations(self.test_X)[0] * weights, atol=1e-10)
+                assert_allclose(weighted.to_pytorch()(torch.tensor(self.test_X)).detach(),
+                                weighted.transform(self.test_X), atol=1e-10)
+        # The refiner's own output reweighting is exported with the residual module.
+        refiner_kwargs = dict(self.make_encoder().refiner_kwargs, output_reweighting="default")
+        scaled = self.make_encoder(refiner_kwargs=refiner_kwargs).fit(self.X, sample_ids=self.ids)
+        self.assertIsNotNone(scaled.refiner_.model_.output_scale)
+        assert_allclose(scaled.to_pytorch()(torch.tensor(self.test_X)).detach(),
+                        scaled.transform(self.test_X), atol=1e-10)
+        cv = self.make_encoder(output_reweighting_cv=2, output_reweighting_matching="soft").fit(
+            self.X, sample_ids=self.ids,
+        )
+        self.assertEqual(cv.linear_encoder_.output_reweighting_cv, 2)
+        self.assertEqual(cv.linear_encoder_.output_reweighting_matching, "soft")
+        assert_allclose(cv.to_pytorch()(torch.tensor(self.test_X)).detach(), cv.transform(self.test_X), atol=1e-10)
+        with self.assertRaisesRegex(ValueError, "requires output reweighting"):
+            self.make_encoder(output_reweighting=False, output_reweighting_cv=2).fit(self.X, sample_ids=self.ids)
+        snr = self.make_encoder(output_reweighting_kwargs={"weighting": "snr"}).fit(self.X, sample_ids=self.ids)
+        self.assertEqual(snr.linear_encoder_.output_reweighting_.weighting, "snr")
+        with self.assertRaisesRegex(ValueError, "output_reweighting must be a boolean"):
+            self.make_encoder(output_reweighting="yes").fit(self.X, sample_ids=self.ids)
+        with self.assertRaisesRegex(ValueError, "requires output_reweighting=True"):
+            self.make_encoder(output_reweighting=False, output_reweighting_kwargs={}).fit(self.X, sample_ids=self.ids)
 
     def test_shuffle_is_shared_by_linear_and_nonlinear_stages(self):
         shuffled = self.make_encoder(random_state=11)

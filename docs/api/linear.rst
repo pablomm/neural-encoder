@@ -15,6 +15,9 @@ Linear encoding
 Feature reliability weighting
 -----------------------------
 
+Used both on the input features and, with signal-to-noise weighting, on the
+output dimensions of ``LinearEncoder`` and ``ChunkedLinearEncoder``.
+
 .. autoclass:: FeatureReweighting
    :members:
 
